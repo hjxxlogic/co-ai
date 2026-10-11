@@ -691,3 +691,129 @@ describe('updated-since polling', () => {
     expect(empty.data).toHaveLength(0); expect(empty.sync_until).toBeTruthy();
   });
 });
+
+async function mcpTool(name: string, args: Record<string, unknown> = {}, headers: Record<string, string> = {}) {
+  const response = await app.request('https://co-ai.test/mcp', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', ...headers },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+  }, env);
+  expect(response.status).toBe(200);
+  const message = await response.json() as any;
+  expect(message.error, name).toBeUndefined();
+  return { ...message.result.structuredContent, isError: message.result.isError, response };
+}
+
+const mcpBearer = (key: string) => ({ Authorization: `Bearer ${key}` });
+
+describe('MCP tools with real D1 and R2 bindings', () => {
+  it('covers project, key, role and item workflows including filters, polling and version conflicts', async () => {
+    const owner = await provision('mcp-owner@test.com');
+    const headers = mcpBearer(owner);
+    expect((await mcpTool('get_api_v1_me', {}, headers)).status).toBe(200);
+    const created = await mcpTool('post_api_v1_projects', { body: { name: 'MCP project', instructions: 'Read first' } }, headers);
+    expect(created.status).toBe(201);
+    const projectId = created.body.data.id;
+    expect((await mcpTool('get_api_v1_projects', { limit: 1 }, headers)).body.data[0].id).toBe(projectId);
+    expect((await mcpTool('get_api_v1_projects_projectId', { projectId }, headers)).body.data.name).toBe('MCP project');
+    expect((await mcpTool('patch_api_v1_projects_projectId', { projectId, body: { name: 'Updated' } }, headers)).body.data.name).toBe('Updated');
+    expect((await mcpTool('get_api_v1_projects_projectId_llm', { projectId }, headers)).body.data.project.instructions).toBe('Read first');
+    const key = await mcpTool('post_api_v1_projects_projectId_keys', { projectId, body: { name: 'MCP agent' } }, headers);
+    expect(key.status).toBe(201);
+    const agent = mcpBearer(key.body.data.api_key);
+    const role = await mcpTool('createProjectRole', { projectId, body: { name: 'Developer' } }, headers);
+    expect(role.status).toBe(201);
+    const roleId = role.body.data.id;
+    expect((await mcpTool('listProjectRoles', { projectId }, agent)).body.data[0].id).toBe(roleId);
+    const item = await mcpTool('post_api_v1_projects_projectId_items', { projectId, body: {
+      title: 'MCP task', kind: 'task', role_id: roleId, recipient_role_ids: [roleId], tags: ['API', 'MCP'],
+    } }, agent);
+    expect(item.status).toBe(201);
+    const itemId = item.body.data.id;
+    expect((await mcpTool('get_api_v1_projects_projectId_items_itemId', { projectId, itemId }, agent)).body.data.tags).toEqual(['api', 'mcp']);
+    const filtered = await mcpTool('get_api_v1_projects_projectId_items', {
+      projectId, tag: ['api', 'mcp'], recipient_role_id: roleId, kind: 'task', updated_since: '2020-01-01T00:00:00Z', include_deleted: true,
+    }, agent);
+    expect(filtered.body.data.map((row: any) => row.id)).toEqual([itemId]);
+    expect(filtered.body.sync_until).toBeTruthy();
+    const updated = await mcpTool('patch_api_v1_projects_projectId_items_itemId', { projectId, itemId, body: { version: 1, status: 'done' } }, agent);
+    expect(updated.body.data.version).toBe(2);
+    const stale = await mcpTool('delete_api_v1_projects_projectId_items_itemId', { projectId, itemId, body: { version: 1 } }, agent);
+    expect(stale.status).toBe(409); expect(stale.isError).toBe(true);
+    const deleted = await mcpTool('delete_api_v1_projects_projectId_items_itemId', { projectId, itemId, body: { version: 2 } }, agent);
+    expect(deleted).toMatchObject({ status: 204, body: null, isError: false });
+    const tombstones = await mcpTool('get_api_v1_projects_projectId_items', { projectId, include_deleted: true }, agent);
+    expect(tombstones.body.data[0].deleted_at).toBeTruthy();
+    expect((await mcpTool('updateProjectRole', { projectId, roleId, body: { archived: true } }, headers)).body.data.archived_at).toBeTruthy();
+    const userKey = await mcpTool('post_api_v1_keys', { body: { name: 'Extra key' } }, headers);
+    expect((await mcpTool('get_api_v1_keys', {}, headers)).body.data.map((row: any) => row.id)).toContain(userKey.body.data.id);
+    expect((await mcpTool('delete_api_v1_keys_keyId', { keyId: userKey.body.data.id }, headers)).status).toBe(204);
+  });
+
+  it('round-trips binary attachments, including empty files and the REST 10 MiB limit', async () => {
+    const owner = await provision('mcp-files@test.com'), projectId = await createProject(owner);
+    const headers = mcpBearer((await projectKey(owner, projectId)).api_key);
+    for (const encoded of ['AAEC/w==', '', Buffer.alloc(10 * 1024 * 1024, 255).toString('base64')]) {
+      const upload = await mcpTool('post_api_v1_projects_projectId_attachments', {
+        projectId, filename: '二进制.bin', content_base64: encoded, content_type: 'application/octet-stream',
+      }, headers);
+      expect(upload.status).toBe(201);
+      const attachmentId = upload.body.data.id;
+      const list = await mcpTool('get_api_v1_projects_projectId_attachments', { projectId }, headers);
+      expect(list.body.data.map((row: any) => row.id)).toContain(attachmentId);
+      const download = await mcpTool('get_api_v1_projects_projectId_attachments_attachmentId', { projectId, attachmentId }, headers);
+      expect(download.status).toBe(200);
+      expect(download.body.data.content_base64 === encoded).toBe(true);
+      expect(download.body.data.content_disposition).toContain(encodeURIComponent('二进制.bin'));
+      expect((await mcpTool('delete_api_v1_projects_projectId_attachments_attachmentId', { projectId, attachmentId }, headers)).status).toBe(204);
+      expect((await mcpTool('get_api_v1_projects_projectId_attachments_attachmentId', { projectId, attachmentId }, headers)).status).toBe(404);
+    }
+  });
+
+  it('preserves missing/revoked credentials, read-only keys, user/project isolation and archived projects', async () => {
+    const owner = await provision('mcp-isolation@test.com'), stranger = await provision('mcp-stranger@test.com');
+    const projectId = await createProject(owner), otherProject = await createProject(owner);
+    const reader = await projectKey(owner, projectId, 'read'), writer = await projectKey(owner, projectId);
+    for (const headers of [{}, mcpBearer('wrong')]) {
+      const denied = await mcpTool('get_api_v1_projects_projectId', { projectId }, headers);
+      expect(denied.status).toBe(401); expect(denied.isError).toBe(true);
+      expect(denied.body.error.documentation).toBe('https://co-ai.test/llm');
+    }
+    const readOnly = await mcpTool('post_api_v1_projects_projectId_items', { projectId, body: { title: 'Denied' } }, mcpBearer(reader.api_key));
+    expect(readOnly.status).toBe(403); expect(readOnly.body.error.documentation).toBe('https://co-ai.test/llm');
+    expect((await mcpTool('get_api_v1_projects_projectId', { projectId }, mcpBearer(stranger))).status).toBe(404);
+    expect((await mcpTool('get_api_v1_projects_projectId', { projectId: otherProject }, mcpBearer(writer.api_key))).status).toBe(404);
+    expect((await mcpTool('createProjectRole', { projectId, body: { name: 'Escalation' } }, mcpBearer(writer.api_key))).status).toBe(403);
+    await request(`/api/v1/keys/${writer.id}`, owner, 'DELETE');
+    expect((await mcpTool('get_api_v1_projects_projectId', { projectId }, mcpBearer(writer.api_key))).status).toBe(401);
+    await request(`/api/v1/projects/${projectId}`, owner, 'PATCH', { archived: true });
+    expect((await mcpTool('get_api_v1_projects_projectId', { projectId }, mcpBearer(reader.api_key))).status).toBe(404);
+  });
+
+  it('covers administrator and Web account operations without bypassing session or CSRF requirements', async () => {
+    const created = await mcpTool('post_api_admin_users', { body: { email: 'mcp-admin-user@test.com', name: 'Managed' } }, mcpBearer(admin));
+    expect(created.status).toBe(201);
+    const userId = created.body.data.user.id, key = created.body.data.key.api_key;
+    expect((await mcpTool('get_api_admin_users', { limit: 100 }, mcpBearer(admin))).body.data.map((row: any) => row.id)).toContain(userId);
+    const changed = await mcpTool('patch_api_admin_users_userId', { userId, body: { name: 'Renamed' } }, mcpBearer(admin));
+    expect(changed.body.data.name).toBe('Renamed');
+    expect((await mcpTool('get_api_admin_users', {}, mcpBearer(key))).status).toBe(401);
+    const input = { body: { role: 'user', credential: key } };
+    expect((await mcpTool('web_login', input)).status).toBe(403);
+    const loggedIn = await mcpTool('web_login', input, { Origin: 'https://co-ai.test' });
+    expect(loggedIn.status).toBe(200);
+    const cookie = loggedIn.response.headers.get('Set-Cookie');
+    expect(cookie).toContain('HttpOnly'); expect(cookie).toContain('Secure');
+    const sessionHeaders = { Cookie: cookie.split(';')[0], Origin: 'https://co-ai.test' };
+    expect((await mcpTool('web_session', {}, sessionHeaders)).body.data.user.id).toBe(userId);
+    expect((await mcpTool('get_api_v1_me', {}, sessionHeaders)).body.data.id).toBe(userId);
+    expect((await mcpTool('web_set_credentials', { body: { username: 'mcp_login', password: 'mcp-password-12345' } }, sessionHeaders)).status).toBe(204);
+    expect((await mcpTool('web_reset_key', {}, sessionHeaders)).status).toBe(201);
+    const passwordLogin = await mcpTool('web_login', { body: { role: 'user', username: 'mcp_login', password: 'mcp-password-12345' } }, { Origin: 'https://co-ai.test' });
+    const passwordCookie = passwordLogin.response.headers.get('Set-Cookie').split(';')[0];
+    const logout = await mcpTool('web_logout', {}, { Cookie: passwordCookie, Origin: 'https://co-ai.test' });
+    expect(logout.status).toBe(204);
+    expect(logout.response.headers.get('Set-Cookie')).toContain('Max-Age=0');
+    expect((await mcpTool('web_session', {}, { Cookie: passwordCookie, Origin: 'https://co-ai.test' })).status).toBe(401);
+    expect((await mcpTool('post_api_admin_users_userId_reset_key', { userId }, mcpBearer(admin))).status).toBe(201);
+  });
+});

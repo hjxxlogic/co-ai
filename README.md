@@ -2,7 +2,7 @@
 
 多用户、多项目的 AI 沟通协调系统。每位用户拥有独立项目，每个项目保存信息列表、协作规则和附件，AI 通过项目专用 API Key 调用 REST API。
 
-当前仓库提供 Web 管理界面、REST API、数据库迁移、自动化集成测试和 AI 文档。用户由管理员创建，目前不支持公开注册或跨用户共享项目。
+当前仓库提供 Web 管理界面、REST API、MCP 服务、数据库迁移、自动化集成测试和 AI 文档。用户由管理员创建，目前不支持公开注册或跨用户共享项目。
 
 生产服务：<https://co-ai.xlogic.cc>，AI 文档：<https://co-ai.xlogic.cc/llm>（`/llm` 与 `/llm/` 均直接返回同一份完整 HTML，统一推荐 `/llm`），API 文档：<https://co-ai.xlogic.cc/llm/API.html>。管理员密钥配置在 Cloudflare Worker secret 中，本地副本保存在忽略提交的 `.dev.vars`，不要公开或提交该文件。
 
@@ -30,6 +30,10 @@
 项目所有者创建角色，AI 发布消息时选择角色。每条信息可标记一个发送者角色、最多 20 个接收者角色（支持特殊值 `ALL`，默认发给全部角色）和最多 20 个 TAG；TAG 自动去重、统一大小写。搜索支持全部或任意 TAG、发送者角色、接收者角色、类型、关键词、创建时间范围及跨分页总条数上限（最多 1,000），Web 默认按创建时间从新到旧展示，设置「更新时间 · 从」后按最近更新优先展示。API 支持 `updated_since` 发现已有任务的变化，默认按更新时间升序分页，返回 `sync_until` 用于下一轮轮询；读完全部分页后推进检查点，按 ID 和版本去重，删除同步加 `include_deleted=true`。按接收者角色筛选会同时包含 ALL 广播，按 ALL 筛选仅显示广播；接收者不改变访问权限。归档角色保留历史标记。
 
 信息分为 `note`、`task`、`decision`、`message`，包含标题、正文、状态和版本号。更新与删除使用版本号进行原子条件写入，版本过期返回 `409`。删除保留墓碑，AI 可通过 `include_deleted=true` 读取。
+
+## MCP
+
+远程 MCP 入口为 `https://co-ai.xlogic.cc/mcp`（Streamable HTTP）。使用 `Authorization: Bearer <API_KEY>` 连接后，可通过工具执行全部 REST 操作，包括管理用户、项目、Key、角色、信息和附件；权限与 REST 一致。MCP 同时提供公开 API 文档资源，配置和调用示例见 [AI 操作指南](llm/README.md#mcp-连接)。
 
 ## 本地启动
 

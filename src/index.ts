@@ -8,6 +8,7 @@ import { csrfGuard, sessionPrincipal, webAuth } from './web-auth';
 import { adminApi } from './admin';
 import { rolesApi } from './roles';
 import { itemsApi } from './items';
+import { mcpApi } from './mcp';
 
 const app = new Hono<AppEnv>();
 const now = () => new Date().toISOString();
@@ -18,7 +19,7 @@ app.use('*', async (c, next) => {
   if (new URL(c.req.url).protocol !== 'https:') {
     const url = new URL(c.req.url);
     url.protocol = 'https:';
-    if (url.pathname.startsWith('/api/')) {
+    if (url.pathname.startsWith('/api/') || url.pathname === '/mcp' || url.pathname === '/mcp/') {
       c.header('Upgrade', 'TLS/1.3');
       return c.json({ error: { code: 426, message: 'HTTPS required' } }, 426);
     }
@@ -210,4 +211,5 @@ project.delete('/attachments/:attachmentId', async (c) => {
 });
 
 app.route('/api/v1/projects/:projectId', project);
+app.route('/mcp', mcpApi(async (request, env) => app.request(request, undefined, env)));
 export default app;

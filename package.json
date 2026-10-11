@@ -21,6 +21,8 @@
     "deploy": "wrangler deploy"
   },
   "dependencies": {
+    "@cfworker/json-schema": "^4.1.1",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "hono": "^4.0.0",
     "zod": "^4.0.0"
   },

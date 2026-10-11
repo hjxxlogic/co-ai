@@ -1712,6 +1712,248 @@
           }
         }
       }
+    },
+    "/health": {
+      "get": {
+        "operationId": "get_health",
+        "summary": "Public service health",
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "default": {
+            "description": "REST error; authentication and permission errors include public documentation URL",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/api/web/login": {
+      "post": {
+        "operationId": "web_login",
+        "summary": "Create a secure Web session using credentials; requires same-origin Origin header",
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "default": {
+            "description": "REST error; authentication and permission errors include public documentation URL",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "role": {
+                        "type": "string",
+                        "enum": [
+                          "admin",
+                          "user"
+                        ]
+                      },
+                      "credential": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256
+                      }
+                    },
+                    "required": [
+                      "role",
+                      "credential"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "role": {
+                        "type": "string",
+                        "const": "user"
+                      },
+                      "username": {
+                        "type": "string",
+                        "minLength": 3,
+                        "maxLength": 64,
+                        "pattern": "^[a-zA-Z0-9_.-]+$"
+                      },
+                      "password": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256,
+                        "writeOnly": true
+                      }
+                    },
+                    "required": [
+                      "role",
+                      "username",
+                      "password"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/web/session": {
+      "get": {
+        "operationId": "web_session",
+        "summary": "Read the current Web session (Cookie authentication)",
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "default": {
+            "description": "REST error; authentication and permission errors include public documentation URL",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "WebSession": []
+          }
+        ]
+      }
+    },
+    "/api/web/logout": {
+      "post": {
+        "operationId": "web_logout",
+        "summary": "End the current Web session; requires same-origin Origin header",
+        "responses": {
+          "204": {
+            "description": "Success"
+          },
+          "default": {
+            "description": "REST error; authentication and permission errors include public documentation URL",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "WebSession": []
+          }
+        ]
+      }
+    },
+    "/api/web/credentials": {
+      "put": {
+        "operationId": "web_set_credentials",
+        "summary": "Set username/password for current Web user; requires session Cookie and same-origin Origin",
+        "responses": {
+          "204": {
+            "description": "Success"
+          },
+          "default": {
+            "description": "REST error; authentication and permission errors include public documentation URL",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "WebSession": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "username": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 64,
+                    "pattern": "^[a-zA-Z0-9_.-]+$"
+                  },
+                  "password": {
+                    "type": "string",
+                    "minLength": 12,
+                    "maxLength": 256,
+                    "writeOnly": true
+                  },
+                  "current_password": {
+                    "type": "string",
+                    "maxLength": 256,
+                    "writeOnly": true
+                  }
+                },
+                "required": [
+                  "username",
+                  "password"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/web/reset-key": {
+      "post": {
+        "operationId": "web_reset_key",
+        "summary": "Reset user API keys for current Web user; requires session Cookie and same-origin Origin",
+        "responses": {
+          "201": {
+            "description": "Success"
+          },
+          "default": {
+            "description": "REST error; authentication and permission errors include public documentation URL",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "WebSession": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -1725,6 +1967,11 @@
         "type": "http",
         "scheme": "bearer",
         "description": "Worker ADMIN_TOKEN secret, only for user provisioning."
+      },
+      "WebSession": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "__Host-coai_session"
       }
     },
     "schemas": {

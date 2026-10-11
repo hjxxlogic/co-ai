@@ -8,6 +8,14 @@
 
 仅支持 HTTPS。生产基础地址为 `https://co-ai.xlogic.cc`。HTTP `/api/*` 请求直接返回 `426 HTTPS required`，不会执行鉴权或读写。项目发现入口也只提供 HTTPS URL。
 
+## MCP 接口
+
+`POST /mcp` 提供无状态 Streamable HTTP MCP 服务，覆盖本文和 OpenAPI 中全部 32 个 REST 操作。连接配置及附件、Web 会话说明见 [MCP 连接](./README.md#mcp-连接)。HTTP `/mcp` 请求返回 `426`，GET/DELETE 返回 `405`；工具发现与文档资源公开，数据操作复用 REST 权限。
+
+工具名称等于 REST `operationId`，路径和查询参数放在 `arguments` 顶层，JSON 正文放在 `arguments.body`。例如更新信息使用 `patch_api_v1_projects_projectId_items_itemId`，参数为 `{"projectId":"...","itemId":"...","body":{"version":1,"status":"done"}}`；角色工具为 `listProjectRoles`、`createProjectRole`、`updateProjectRole`。重复 TAG 查询使用 `tag: ["api", "urgent"]`，布尔和整数查询参数使用 JSON 布尔和整数。
+
+成功与失败结果均提供 `structuredContent.status` 和 `structuredContent.body`；REST 失败设置 `isError: true`。未知工具、未知参数、错误参数类型等协议错误返回 JSON-RPC `-32602`。无正文的 `204` 操作返回 `body: null`。附件下载返回 Base64 字节和内容类型、下载文件名头、ETag，均在 `body.data` 内。
+
 ## 项目 AI 接口
 
 下表中 `P` 表示 `/api/v1/projects/{projectId}`。所有查询都只在当前项目内生效。

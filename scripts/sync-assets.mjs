@@ -12,6 +12,9 @@ markdown.renderer.rules.link_open = (tokens, index, options, _env, renderer) => 
   if (href && /^(?:\.\/)?(?:README|API)\.md(?:#.*)?$/.test(href)) {
     tokens[index].attrSet('href', '/llm/' + href.replace(/^\.\//, '').replace(/\.md(?=#|$)/, '.html'));
   }
+  if (href && /^(?:\.\/)?openapi\.json(?:#.*)?$/.test(href)) {
+    tokens[index].attrSet('href', '/llm/' + href.replace(/^\.\//, ''));
+  }
   return renderer.renderToken(tokens, index, options);
 };
 const stylesheet = `:root{font-family:system-ui,"PingFang SC","Microsoft YaHei",sans-serif;color:#263c37;background:#f8faf6;line-height:1.75}body{max-width:960px;margin:auto;padding:24px}nav{display:flex;gap:18px;flex-wrap:wrap;padding:12px 0 24px;border-bottom:1px solid #dce3db}a{color:#276c51}main{padding-top:12px;overflow-wrap:anywhere}h1,h2,h3{line-height:1.35;margin-top:1.5em}pre{background:#edf1eb;padding:18px;border-radius:8px;overflow:auto;line-height:1.6}code{font-family:ui-monospace,monospace;font-size:.9em}table{border-collapse:collapse;display:block;overflow:auto}th,td{border:1px solid #dce3db;padding:8px 12px;text-align:left}blockquote{border-left:3px solid #9cae9f;padding-left:16px;margin-left:0}footer{margin-top:40px;border-top:1px solid #dce3db;padding-top:16px;font-size:14px}@media(max-width:640px){body{padding:16px}pre{padding:12px}}\n`;

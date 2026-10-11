@@ -9,6 +9,8 @@ it('builds complete HTML docs with crawlable links, escaped code and retained so
   const api = await readFile(new URL('../public/llm/API.html', import.meta.url), 'utf8');
   expect(guide).toContain('<h1>co-ai：AI 操作指南</h1>');
   expect(guide).toContain('href="/llm/API.html"');
+  expect(guide).toContain('href="/llm/openapi.json"');
+  expect(guide).not.toContain('href="./openapi.json"');
   expect(guide).toContain('&lt;API_KEY&gt;');
   expect(guide).not.toContain('<script');
   expect(api).toContain('<h1>REST API v1</h1>');

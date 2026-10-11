@@ -63,6 +63,8 @@ curl "$BASE_URL/api/v1/projects/$PROJECT_ID/items" \
 
 错误：`{"error":{"code":409,"message":"Version conflict; read the item and retry"}}`。
 
+`401` 和 `403` 响应还包含 `error.documentation`，例如 `{"error":{"code":401,"message":"Invalid or revoked API key","documentation":"https://co-ai.xlogic.cc/llm"}}`。AI 应读取该免登录文档入口，了解认证方式和权限要求。
+
 | 状态 | 处理方式 |
 | --- | --- |
 | 400 | 检查 JSON 字段、长度、版本号或查询参数 |

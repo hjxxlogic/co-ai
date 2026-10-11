@@ -2310,6 +2310,11 @@
               },
               "message": {
                 "type": "string"
+              },
+              "documentation": {
+                "type": "string",
+                "format": "uri",
+                "description": "Present on 401 and 403 responses. Absolute HTTPS URL of the public /llm documentation on the current origin."
               }
             },
             "required": [

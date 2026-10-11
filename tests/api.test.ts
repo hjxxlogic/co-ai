@@ -191,6 +191,36 @@ describe('HTTPS Web sessions and management', () => {
 afterAll(async () => { await mf?.dispose(); });
 
 describe('multi-user project API with D1 and R2', () => {
+  it('provides public documentation for authentication and permission failures', async () => {
+    const owner = await provision('unauthorized-docs@test.com');
+    const id = await createProject(owner);
+    const reader = (await projectKey(owner, id, 'read')).api_key;
+    const cases = [
+      { response: await request('/api/v1/projects'), status: 401 },
+      { response: await request('/api/v1/projects', 'invalid-key'), status: 401 },
+      { response: await request('/api/admin/users', 'wrong'), status: 401 },
+      { response: await web('/api/web/session'), status: 401 },
+      { response: await request(`/api/v1/projects/${id}/items`, reader, 'POST', { title: 'Denied' }), status: 403 },
+      { response: await request('/api/v1/projects', reader), status: 403 },
+    ];
+    for (const { response, status } of cases) {
+      expect(response.status).toBe(status);
+      expect(response.headers.get('Location')).toBeNull();
+      const result = await response.json() as any;
+      expect(result.error.code).toBe(status);
+      expect(result.error.message).toBeTruthy();
+      expect(result.error.documentation).toBe('https://co-ai.test/llm');
+      const docs = await app.request(result.error.documentation, {}, env);
+      expect(docs.status).toBe(200);
+      expect(await docs.text()).toContain('<h1>AI docs</h1>');
+    }
+    const otherOrigin = await app.request('https://other.test/api/v1/projects?token=private', {}, env);
+    expect((await otherOrigin.json() as any).error.documentation).toBe('https://other.test/llm');
+    const missing = await request(`/api/v1/projects/${crypto.randomUUID()}`, reader);
+    expect(missing.status).toBe(404);
+    expect((await missing.json() as any).error.documentation).toBeUndefined();
+  });
+
   it('requires credentials and rejects invalid provisioning / duplicate users', async () => {
     expect((await request('/api/v1/projects')).status).toBe(401);
     expect((await request('/api/admin/users', 'wrong', 'POST', { email: 'x@test.com', name: 'X' })).status).toBe(401);

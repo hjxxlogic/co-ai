@@ -2,6 +2,8 @@
 
 统一文档入口为 `/llm`，`/llm/` 返回同一份 HTML 指南；HTML API 文档为 `/llm/API.html`。`/llm/README.md` 和 `/llm/API.md` 以 `text/plain; charset=utf-8` 返回原始 Markdown，供 AI 客户端直接读取。
 
+未认证（`401`）或权限不足（`403`）的响应包含 `error.documentation`，值为当前站点的完整 HTTPS `/llm` 地址。AI 可直接读取该公开地址，了解认证方式和权限要求。
+
 基础路径 `/api/v1`。所有端点使用 `Authorization: Bearer <API_KEY>`。JSON 写入必须使用 `Content-Type: application/json`，未知字段返回 `400`。时间为 UTC ISO 8601，ID 为不透明字符串。
 
 仅支持 HTTPS。生产基础地址为 `https://co-ai.xlogic.cc`。HTTP `/api/*` 请求直接返回 `426 HTTPS required`，不会执行鉴权或读写。项目发现入口也只提供 HTTPS URL。

@@ -37,7 +37,12 @@ app.use('*', async (c, next) => {
   c.header('Cache-Control', 'no-store');
 });
 app.onError((error, c) => {
-  if (error instanceof HTTPException) return c.json({ error: { code: error.status, message: error.message } }, error.status);
+  if (error instanceof HTTPException) {
+    const documentation = error.status === 401 || error.status === 403
+      ? { documentation: new URL('/llm', c.req.url).href }
+      : {};
+    return c.json({ error: { code: error.status, message: error.message, ...documentation } }, error.status);
+  }
   // Do not log keys, request bodies, or database error messages.
   console.error('Unhandled API error', error.name);
   return c.json({ error: { code: 500, message: 'Internal server error' } }, 500);

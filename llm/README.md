@@ -78,7 +78,7 @@ REST API 和 MCP 均支持本站 OAuth 授权码流程，必须使用 S256 PKCE�
 | `read`（默认） | 用户选择一个项目，仅可读取 |
 | `write` | 用户选择一个项目，可读取并创建、修改、删除信息和附件 |
 | `manage` | 用户明确授权管理自己的全部项目、角色和 Key，以及读写项目数据 |
-| `admin` | 管理员登录后单独授权用户管理；不能与其他 scope 混用 |
+| `admin` | 管理员登录后授权用户管理；实际令牌不与用户 scope 混用 |
 
 授权码交换示例：
 
@@ -92,6 +92,8 @@ curl "$BASE_URL/oauth/token" \
   --data-urlencode "code_verifier=$CODE_VERIFIER" \
   --data-urlencode "resource=$RESOURCE"
 ```
+
+MCP 允许客户端同时请求 `read write manage admin`（例如 ChatGPT 从发现文档申请全部 scope）。登录后，授权页面仅展示当前身份可授予的权限：用户授予请求中的 `read/write/manage`，管理员只授予 `admin`。令牌响应的 `scope` 返回实际授权范围；普通用户不会获得管理员权限。REST 管理员资源仍只接受单独的 `admin`，REST 用户资源不接受 `admin`。
 
 `resource` 在授权和令牌请求中都必填，可取 `$BASE_URL/mcp`、`$BASE_URL/api/v1` 或 `$BASE_URL/api/admin`。令牌只用于对应资源，MCP 令牌不能直接请求公开 REST URL，REST 令牌不能直接请求 MCP；MCP 内部工具仍可以安全执行相应 REST 功能。授权和令牌请求使用同一个资源，不支持任意第三方资源。
 

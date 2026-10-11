@@ -59,10 +59,15 @@ function target(c: Context<AppEnv>, value: string | undefined) {
 }
 function scopes(value: string | undefined) {
   const parts = [...new Set((value ?? 'read').split(' ').filter(Boolean))];
-  if (!parts.length || parts.some((part) => !oauthScopes.includes(part)) || (parts.includes('admin') && parts.length !== 1)) {
-    throw new OAuthError('invalid_scope', 'Use read, write, manage, or admin (admin must be requested separately)');
+  if (!parts.length || parts.some((part) => !oauthScopes.includes(part))) {
+    throw new OAuthError('invalid_scope', 'Use read, write, manage, or admin');
   }
   return oauthScopes.filter((scope) => parts.includes(scope)).join(' ');
+}
+// A discovery-driven client may request every MCP scope. Consent grants only
+// the subset supported by the signed-in identity, never a combined identity.
+function consentScope(requested: string, role: 'user' | 'admin') {
+  return requested.split(' ').filter((scope) => role === 'admin' ? scope === 'admin' : scope !== 'admin').join(' ');
 }
 async function client(c: Context<AppEnv>, id: string | undefined) {
   const row = id ? await c.env.DB.prepare('SELECT id, name, redirect_uris, grant_types FROM oauth_clients WHERE id = ?').bind(id).first<Client>() : null;
@@ -161,7 +166,7 @@ oauthApi.get('/authorize', async (c) => {
   if (input.code_challenge_method !== 'S256' || !pkce.safeParse(input.code_challenge).success) throw new OAuthError('invalid_request', 'S256 PKCE is required');
   if (input.state?.length > 2048) throw new OAuthError('invalid_request', 'State is too long');
   const resource = target(c, input.resource), scope = scopes(input.scope);
-  if ((resource === resourceUri(c, 'admin')) !== (scope === 'admin') && resource !== resourceUri(c, 'mcp')) throw new OAuthError('invalid_scope', 'Scope does not match the resource');
+  if (resource !== resourceUri(c, 'mcp') && (resource === resourceUri(c, 'admin') ? scope !== 'admin' : scope.split(' ').includes('admin'))) throw new OAuthError('invalid_scope', 'Scope does not match the resource');
   const id = oauthSecret('');
   await c.env.DB.prepare('DELETE FROM oauth_requests WHERE expires_at <= ?').bind(new Date().toISOString()).run();
   await c.env.DB.prepare('INSERT INTO oauth_requests (id, client_id, redirect_uri, resource, scope, state, code_challenge, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
@@ -181,7 +186,7 @@ oauthApi.get('/requests/:requestId', async (c) => {
     if (binding?.session_hash !== hash) throw new OAuthError('invalid_request', 'Authorization request belongs to another browser session', 403);
   }
   const projects = actor?.principal ? (await c.env.DB.prepare('SELECT id, name FROM projects WHERE owner_id = ? AND archived_at IS NULL ORDER BY name, id').bind(actor.principal.user_id).all()).results : [];
-  return c.json({ data: { client_name: registered.name, redirect_uri: request.redirect_uri, resource: request.resource, scope: request.scope, actor: actor ? { role: actor.role, name: actor.name } : null, projects } });
+  return c.json({ data: { client_name: registered.name, redirect_uri: request.redirect_uri, resource: request.resource, scope: actor ? consentScope(request.scope, actor.role) : request.scope, actor: actor ? { role: actor.role, name: actor.name } : null, projects } });
 });
 
 oauthApi.post('/consent', async (c) => {
@@ -195,14 +200,16 @@ oauthApi.post('/consent', async (c) => {
     if (!result.meta.changes) throw new OAuthError('invalid_request', 'Authorization request already used');
     return c.json({ data: { redirect: callback(request, { error: 'access_denied' }, issuer) } });
   }
-  const admin = request.scope === 'admin';
+  const scope = consentScope(request.scope, actor.role);
+  if (!scope) throw new OAuthError('access_denied', 'This account cannot authorize the requested scopes', 403);
+  const admin = scope === 'admin';
   if (admin !== (actor.role === 'admin')) throw new OAuthError('access_denied', admin ? 'Administrator sign-in required' : 'User sign-in required', 403);
-  const manage = request.scope.split(' ').includes('manage');
+  const manage = scope.split(' ').includes('manage');
   if (!admin && !manage && !input.project_id) throw new OAuthError('invalid_request', 'Select a project');
   if ((admin || manage) && input.project_id) throw new OAuthError('invalid_request', 'This scope authorizes account management, not a single project');
   if (input.project_id && !await c.env.DB.prepare('SELECT id FROM projects WHERE id = ? AND owner_id = ? AND archived_at IS NULL').bind(input.project_id, actor.principal!.user_id).first()) throw new OAuthError('access_denied', 'Project not available', 403);
   const grantId = crypto.randomUUID(), code = oauthSecret('coao_code_');
-  const key = admin ? null : await newKey(c.env, actor.principal!.user_id, input.project_id ?? null, 'OAuth: ' + (await client(c, request.client_id)).name, request.scope.split(' ').some((scope) => ['write', 'manage'].includes(scope)) ? 'write' : 'read');
+  const key = admin ? null : await newKey(c.env, actor.principal!.user_id, input.project_id ?? null, 'OAuth: ' + (await client(c, request.client_id)).name, scope.split(' ').some((scope) => ['write', 'manage'].includes(scope)) ? 'write' : 'read');
   const password = admin ? null : await c.env.DB.prepare('SELECT password_hash FROM users WHERE id = ?').bind(actor.principal!.user_id).first<{ password_hash: string | null }>();
   const timestamp = new Date().toISOString();
   // Each insert is conditional on this transaction's unique claim, preventing
@@ -212,7 +219,7 @@ oauthApi.post('/consent', async (c) => {
     .bind(key.data.id, actor.principal!.user_id, input.project_id ?? null, key.data.name, await digest(key.data.api_key), key.data.permission, timestamp, request.id, claim));
   statements.push(
     c.env.DB.prepare('INSERT INTO oauth_grants (id, client_id, resource, scope, key_id, admin_hash, password_hash, created_at, expires_at) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM oauth_requests WHERE id = ? AND consumed_by = ?)')
-      .bind(grantId, request.client_id, request.resource, request.scope, key?.data.id ?? null, actor.adminHash, password?.password_hash ?? null, timestamp, expiresIn(grantLifetime), request.id, claim),
+      .bind(grantId, request.client_id, request.resource, scope, key?.data.id ?? null, actor.adminHash, password?.password_hash ?? null, timestamp, expiresIn(grantLifetime), request.id, claim),
     c.env.DB.prepare('INSERT INTO oauth_codes (token_hash, grant_id, redirect_uri, code_challenge, expires_at) SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM oauth_requests WHERE id = ? AND consumed_by = ?)')
       .bind(await digest(code), grantId, request.redirect_uri, request.code_challenge, expiresIn(300), request.id, claim),
   );

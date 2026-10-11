@@ -932,6 +932,34 @@ describe('OAuth authorization server and protected resources', () => {
     expect((await mcpTool('get_health', {}, headers)).status).toBe(401);
   });
 
+  it('accepts ChatGPT all-scope MCP requests and grants only the consenting identity scopes', async () => {
+    const owner = await provision('oauth-chatgpt@test.com'), cookie = await login('user', owner);
+    const clientId = await registerOAuth('ChatGPT'), resource = 'https://co-ai.test/mcp';
+    const allScopes = 'read write manage admin';
+    const id = await startOAuth(clientId, cookie, resource, allScopes);
+    const details = await (await web('/oauth/requests/' + id, cookie)).json() as any;
+    expect(details.data.scope).toBe('read write manage');
+    const tokens = await oauthTokens(clientId, await approveOAuth(id, cookie), resource);
+    expect(tokens.scope).toBe('read write manage');
+    expect((await mcpTool('get_api_v1_projects', {}, mcpBearer(tokens.access_token))).status).toBe(200);
+    expect((await mcpTool('get_api_admin_users', {}, mcpBearer(tokens.access_token))).status).toBe(403);
+    const refreshed = await oauthForm('/oauth/token', { grant_type: 'refresh_token', client_id: clientId, refresh_token: tokens.refresh_token, resource, scope: allScopes });
+    expect(refreshed.status).toBe(400);
+    expect((await refreshed.json() as any).error).toBe('invalid_scope');
+    const adminCookie = await login('admin', admin);
+    const adminId = await startOAuth(clientId, adminCookie, resource, allScopes);
+    const adminDetails = await (await web('/oauth/requests/' + adminId, adminCookie)).json() as any;
+    expect(adminDetails.data.scope).toBe('admin');
+    const adminTokens = await oauthTokens(clientId, await approveOAuth(adminId, adminCookie), resource);
+    expect(adminTokens.scope).toBe('admin');
+    expect((await mcpTool('get_api_admin_users', {}, mcpBearer(adminTokens.access_token))).status).toBe(200);
+    expect((await mcpTool('get_api_v1_projects', {}, mcpBearer(adminTokens.access_token))).status).toBe(403);
+    for (const restResource of ['https://co-ai.test/api/v1', 'https://co-ai.test/api/admin']) {
+      const query = new URLSearchParams({ client_id: clientId, redirect_uri: oauthRedirect, response_type: 'code', code_challenge: await pkceChallenge(oauthVerifier), code_challenge_method: 'S256', resource: restResource, scope: allScopes });
+      expect((await web('/oauth/authorize?' + query, cookie)).status).toBe(400);
+    }
+  });
+
   it('rotates refresh tokens atomically, detects replay and revokes the whole grant', async () => {
     const owner = await provision('oauth-refresh@test.com'), projectId = await createProject(owner), cookie = await login('user', owner);
     const clientId = await registerOAuth('Refresh'), resource = 'https://co-ai.test/api/v1';

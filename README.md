@@ -35,6 +35,8 @@
 
 远程 MCP 入口为 `https://co-ai.xlogic.cc/mcp`（Streamable HTTP）。使用 `Authorization: Bearer <API_KEY>` 连接后，可通过工具执行全部 REST 操作，包括管理用户、项目、Key、角色、信息和附件；权限与 REST 一致。MCP 同时提供公开 API 文档资源，配置和调用示例见 [AI 操作指南](llm/README.md#mcp-连接)。
 
+REST 和 MCP 也支持本站 OAuth 授权码 + S256 PKCE：客户端通过浏览器登录、选择项目及权限，再用短期令牌调用对应资源。包含动态注册、MCP 授权发现、刷新令牌轮换和撤销。配置与协议说明见 [OAuth 浏览器授权](llm/README.md#oauth-浏览器授权)。启用前需应用 `migrations/0006_oauth.sql`；保留现有 API Key 和 Web 登录方式。
+
 ## 本地启动
 
 要求 Node.js 22.17+ 和 npm。Linux 本地运行还需要 glibc 2.35+（例如 Ubuntu 22.04+ 或 Debian 12）；老系统可使用 `node:22-bookworm-slim` 容器。

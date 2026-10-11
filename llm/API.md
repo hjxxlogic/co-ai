@@ -4,7 +4,9 @@
 
 未认证（`401`）或权限不足（`403`）的响应包含 `error.documentation`，值为当前站点的完整 HTTPS `/llm` 地址。AI 可直接读取该公开地址，了解认证方式和权限要求。
 
-基础路径 `/api/v1`。所有端点使用 `Authorization: Bearer <API_KEY>`。JSON 写入必须使用 `Content-Type: application/json`，未知字段返回 `400`。时间为 UTC ISO 8601，ID 为不透明字符串。
+基础路径 `/api/v1`。受保护端点使用 `Authorization: Bearer <API_KEY 或 OAuth access_token>`。JSON 写入必须使用 `Content-Type: application/json`，未知字段返回 `400`。时间为 UTC ISO 8601，ID 为不透明字符串。
+
+OAuth 使用本站授权服务器的授权码 + S256 PKCE 流程，支持客户端动态注册、浏览器项目/权限确认、短期访问令牌、刷新轮换和撤销。发现入口为 `/.well-known/oauth-authorization-server`，REST 用户/项目资源为 `/api/v1`，管理员资源为 `/api/admin`，MCP 资源为 `/mcp`；授权及令牌请求中必须明确发送完整 `resource` URI。端点和调用说明见 [OAuth 浏览器授权](./README.md#oauth-浏览器授权)。`401` 响应提供 `WWW-Authenticate` 发现头；OAuth scope 不足时返回 `403` 和所需 scope。
 
 仅支持 HTTPS。生产基础地址为 `https://co-ai.xlogic.cc`。HTTP `/api/*` 请求直接返回 `426 HTTPS required`，不会执行鉴权或读写。项目发现入口也只提供 HTTPS URL。
 
@@ -14,7 +16,7 @@
 
 工具名称等于 REST `operationId`，路径和查询参数放在 `arguments` 顶层，JSON 正文放在 `arguments.body`。例如更新信息使用 `patch_api_v1_projects_projectId_items_itemId`，参数为 `{"projectId":"...","itemId":"...","body":{"version":1,"status":"done"}}`；角色工具为 `listProjectRoles`、`createProjectRole`、`updateProjectRole`。重复 TAG 查询使用 `tag: ["api", "urgent"]`，布尔和整数查询参数使用 JSON 布尔和整数。
 
-成功与失败结果均提供 `structuredContent.status` 和 `structuredContent.body`；REST 失败设置 `isError: true`。未知工具、未知参数、错误参数类型等协议错误返回 JSON-RPC `-32602`。无正文的 `204` 操作返回 `body: null`。附件下载返回 Base64 字节和内容类型、下载文件名头、ETag，均在 `body.data` 内。
+普通成功与失败结果提供 `structuredContent.status` 和 `structuredContent.body`；REST 失败设置 `isError: true`。认证失败直接返回 HTTP `401`，OAuth 权限不足直接返回 HTTP `403`，并带 MCP 资源的 `WWW-Authenticate` 授权发现头。未知工具、未知参数、错误参数类型等协议错误返回 JSON-RPC `-32602`。无正文的 `204` 操作返回 `body: null`。附件下载返回 Base64 字节和内容类型、下载文件名头、ETag，均在 `body.data` 内。
 
 ## 项目 AI 接口
 

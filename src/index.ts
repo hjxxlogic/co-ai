@@ -9,6 +9,8 @@ import { adminApi } from './admin';
 import { rolesApi } from './roles';
 import { itemsApi } from './items';
 import { mcpApi } from './mcp';
+import { challenge, oauthIdentity, requireOAuthScope, oauthContext, type OAuthEnv } from './oauth-security';
+import { oauthApi, oauthMetadata, protectedMetadata } from './oauth';
 
 const app = new Hono<AppEnv>();
 const now = () => new Date().toISOString();
@@ -19,7 +21,7 @@ app.use('*', async (c, next) => {
   if (new URL(c.req.url).protocol !== 'https:') {
     const url = new URL(c.req.url);
     url.protocol = 'https:';
-    if (url.pathname.startsWith('/api/') || url.pathname === '/mcp' || url.pathname === '/mcp/') {
+    if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/oauth/') || url.pathname.startsWith('/.well-known/') || url.pathname === '/mcp' || url.pathname === '/mcp/') {
       c.header('Upgrade', 'TLS/1.3');
       return c.json({ error: { code: 426, message: 'HTTPS required' } }, 426);
     }
@@ -32,13 +34,34 @@ app.use('*', async (c, next) => {
   if (c.req.path === '/llm' || c.req.path.startsWith('/llm/')) {
     c.header('Content-Security-Policy', "default-src 'self'; script-src 'none'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
   }
-  c.header('Referrer-Policy', 'same-origin');
+  if (!c.res.headers.has('Referrer-Policy')) c.header('Referrer-Policy', 'same-origin');
   c.header('Strict-Transport-Security', 'max-age=31536000');
   c.header('X-Content-Type-Options', 'nosniff');
   c.header('Cache-Control', 'no-store');
 });
+app.use('*', async (c, next) => {
+  const path = c.req.path;
+  const resource = path.startsWith('/api/v1/') || path.startsWith('/api/admin/') || path === '/mcp' || path === '/mcp/';
+  if (path.startsWith('/.well-known/') || resource) {
+    if (c.req.method === 'OPTIONS') {
+      c.header('Access-Control-Allow-Origin', '*');
+      c.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+      c.header('Access-Control-Allow-Headers', 'Authorization, Content-Type, MCP-Protocol-Version, MCP-Session-Id');
+      return c.body(null, 204);
+    }
+  }
+  await next();
+  if (path.startsWith('/.well-known/') || resource) {
+    c.header('Access-Control-Allow-Origin', '*');
+    c.header('Access-Control-Expose-Headers', 'WWW-Authenticate, MCP-Protocol-Version');
+  }
+});
 app.onError((error, c) => {
   if (error instanceof HTTPException) {
+    if (error.status === 401 && !c.res.headers.has('WWW-Authenticate')) c.header('WWW-Authenticate', challenge(c, 401));
+    if (error.status === 403 && error.message === 'User API key required' && ((c.env as OAuthEnv)[oauthContext] || /^Bearer coao_/i.test(c.req.header('Authorization') ?? ''))) {
+      c.header('WWW-Authenticate', challenge(c, 403, 'manage'));
+    }
     const documentation = error.status === 401 || error.status === 403
       ? { documentation: new URL('/llm', c.req.url).href }
       : {};
@@ -56,6 +79,14 @@ app.get('/', async (c) => {
 });
 app.get('/app.js', (c) => c.env.DOCS.fetch(c.req.raw));
 app.get('/styles.css', (c) => c.env.DOCS.fetch(c.req.raw));
+app.get('/oauth.js', (c) => c.env.DOCS.fetch(c.req.raw));
+app.get('/oauth.css', (c) => c.env.DOCS.fetch(c.req.raw));
+app.get('/.well-known/oauth-authorization-server', oauthMetadata);
+app.get('/.well-known/oauth-protected-resource', protectedMetadata('mcp'));
+app.get('/.well-known/oauth-protected-resource/mcp', protectedMetadata('mcp'));
+app.get('/.well-known/oauth-protected-resource/api/v1', protectedMetadata('api'));
+app.get('/.well-known/oauth-protected-resource/api/admin', protectedMetadata('admin'));
+app.route('/oauth', oauthApi);
 const docsIndex = (c: Context<AppEnv>) => {
   const url = new URL(c.req.url);
   url.pathname = '/llm/index.html';
@@ -75,7 +106,9 @@ app.route('/api/web', webAuth);
 app.route('/api/admin', adminApi);
 
 app.use('/api/v1/*', async (c, next) => {
-  const key = c.req.header('Authorization')
+  const oauth = await oauthIdentity(c, 'api');
+  if (oauth) requireOAuthScope(c, oauth, ['GET', 'HEAD'].includes(c.req.method) ? 'read' : 'write');
+  const key = oauth ? oauth.principal : c.req.header('Authorization')
     ? await c.env.DB.prepare("SELECT k.id, k.user_id, k.project_id, k.permission FROM api_keys k JOIN users u ON u.id = k.user_id WHERE k.key_hash = ? AND k.kind = 'api' AND k.revoked_at IS NULL AND u.disabled_at IS NULL")
       .bind(await digest(bearer(c))).first<Principal>()
     : await sessionPrincipal(c);

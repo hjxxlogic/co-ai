@@ -50,11 +50,56 @@ MCP 入口为 `https://co-ai.xlogic.cc/mcp`，使用 Streamable HTTP，支持 `i
 }
 ```
 
-工具结果包含 `structuredContent: {"status": 200, "body": {...}}`，保留 REST 状态码和响应正文；失败时 `isError: true`，`401` / `403` 的正文包含 `/llm` 文档入口。工具目录和三个文档资源公开可读，不包含项目数据；实际数据操作沿用 REST 的认证、用户/项目隔离、只读权限和版本校验。
+工具结果包含 `structuredContent: {"status": 200, "body": {...}}`，保留 REST 状态码和响应正文；普通 REST 失败时 `isError: true`。缺少/无效认证返回 HTTP `401`，OAuth 权限不足返回 HTTP `403`，均提供 `WWW-Authenticate` 授权发现头和 `/llm` 文档入口，客户端可触发浏览器授权。工具目录和三个文档资源公开可读，不包含项目数据；实际数据操作沿用 REST 的认证、用户/项目隔离、只读权限和版本校验。
 
 附件上传工具使用 `content_base64`（标准带填充 Base64）、`filename`、`projectId` 和可选 `content_type`，解码后最大 10 MiB；下载的完整字节位于 `structuredContent.body.data.content_base64`。普通 JSON 写入仍受 REST 128 KiB 限制，MCP 请求总大小限制为 14 MiB。
 
-文档资源包括 `/llm/README.md`、`/llm/API.md`、`/llm/openapi.json`，通过 `resources/read` 读取列表中的完整 URI。Web 账号工具 `web_login`、`web_session`、`web_logout`、`web_set_credentials`、`web_reset_key` 保留原会话规则：写请求须携带与服务站点一致的 `Origin`，客户端需保存登录响应的 `Set-Cookie` 并在后续请求中发送 `Cookie`。任何 MCP 请求如带 `Origin`，必须与服务站点一致。
+文档资源包括 `/llm/README.md`、`/llm/API.md`、`/llm/openapi.json`，通过 `resources/read` 读取列表中的完整 URI。Web 账号工具 `web_login`、`web_session`、`web_logout`、`web_set_credentials`、`web_reset_key` 保留原会话规则：写请求须携带与服务站点一致的 `Origin`，客户端需保存登录响应的 `Set-Cookie` 并在后续请求中发送 `Cookie`。API Key 或 Cookie MCP 请求如带 `Origin`，必须与服务站点一致；OAuth Bearer 请求支持客户端 Origin。
+
+## OAuth 浏览器授权
+
+REST API 和 MCP 均支持本站 OAuth 授权码流程，必须使用 S256 PKCE。API Key 仍可使用；OAuth 客户端无需获取用户的 API Key 或密码。支持 OAuth 的 MCP 客户端可只配置 `/mcp` 地址，访问受保护工具时根据 HTTP `401` 的 `WWW-Authenticate` 完成发现、客户端注册和浏览器授权。初始化、工具目录、健康检查和文档资源仍公开。
+
+| 端点 | 用途 |
+| --- | --- |
+| `GET /.well-known/oauth-authorization-server` | 授权服务器元数据、S256 支持和端点发现 |
+| `GET /.well-known/oauth-protected-resource/mcp` | MCP 资源元数据，根 `/.well-known/oauth-protected-resource` 返回同一份 MCP 元数据 |
+| `GET /.well-known/oauth-protected-resource/api/v1` | REST 用户/项目资源元数据 |
+| `GET /.well-known/oauth-protected-resource/api/admin` | REST 管理员资源元数据 |
+| `POST /oauth/register` | 注册公共客户端，JSON 正文包含 `client_name`、`redirect_uris`、`token_endpoint_auth_method: "none"`，可指定 `grant_types`（默认授权码和刷新）、`response_types: ["code"]` |
+| `GET /oauth/authorize` | 浏览器登录并明确确认项目和权限 |
+| `POST /oauth/token` | 以表单正文交换授权码或轮换刷新令牌 |
+| `POST /oauth/revoke` | 以表单正文撤销整次授权及其全部令牌 |
+
+`/oauth/authorize` 必须携带 `response_type=code`、`client_id`、已注册的完整 `redirect_uri`、`code_challenge`、`code_challenge_method=S256`、`resource`，建议携带并在回调验证 `state`。回调包含 `code`、原始 `state`（如有）及 `iss`。回调地址只允许 HTTPS 或 HTTP loopback（localhost、127.0.0.1、[::1]），必须精确匹配注册值。当前支持公共客户端 `none`，不支持客户端密码、隐式授权、密码授权或客户端凭据授权。
+
+| scope | 授权范围 |
+| --- | --- |
+| `read`（默认） | 用户选择一个项目，仅可读取 |
+| `write` | 用户选择一个项目，可读取并创建、修改、删除信息和附件 |
+| `manage` | 用户明确授权管理自己的全部项目、角色和 Key，以及读写项目数据 |
+| `admin` | 管理员登录后单独授权用户管理；不能与其他 scope 混用 |
+
+授权码交换示例：
+
+```sh
+curl "$BASE_URL/oauth/token" \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  --data-urlencode 'grant_type=authorization_code' \
+  --data-urlencode "client_id=$CLIENT_ID" \
+  --data-urlencode "redirect_uri=$REDIRECT_URI" \
+  --data-urlencode "code=$AUTHORIZATION_CODE" \
+  --data-urlencode "code_verifier=$CODE_VERIFIER" \
+  --data-urlencode "resource=$RESOURCE"
+```
+
+`resource` 在授权和令牌请求中都必填，可取 `$BASE_URL/mcp`、`$BASE_URL/api/v1` 或 `$BASE_URL/api/admin`。令牌只用于对应资源，MCP 令牌不能直接请求公开 REST URL，REST 令牌不能直接请求 MCP；MCP 内部工具仍可以安全执行相应 REST 功能。授权和令牌请求使用同一个资源，不支持任意第三方资源。
+
+令牌响应含 `access_token`、`token_type: "Bearer"`、`expires_in: 3600`、`scope`，已注册刷新流程的客户端另获 `refresh_token`。调用时发送 `Authorization: Bearer <access_token>`；令牌不得放入 URL。刷新使用 `grant_type=refresh_token`、`client_id`、当前 `refresh_token` 和相同 `resource`，每次必须保存新的刷新令牌。刷新不能扩大或改变 scope，整次授权最长 30 天；过期后重新浏览器授权。授权请求有效期 10 分钟，授权码 5 分钟且只能兑换一次；授权码或刷新令牌重放会撤销整次授权。不要并发刷新同一令牌。
+
+撤销请求包含 `client_id`、`token`（访问或刷新令牌），未知令牌也返回 `200`。普通用户也可以在 Key 管理中撤销名为 `OAuth: <应用名>` 的 Key。用户停用、对应 Key 撤销、密码修改、项目归档或管理员令牌轮换会阻止相关授权继续使用。OAuth 令牌不代替 `/api/web/*` 的浏览器会话 Cookie。
+
+发现与 Bearer 资源端点支持无 Cookie 的跨域请求和预检；OAuth MCP Bearer 请求可使用客户端 Origin。使用 Cookie 的 MCP/Web 写请求仍要求本站同源 Origin。注册每来源 IP 每 15 分钟最多 20 次，令牌和撤销端点各最多 100 次，超出返回 `429`。协议端点错误使用 `{"error":"invalid_grant","error_description":"..."}`，与 REST 的错误包装区分。
 ## 协作约定
 
 - 使用 `note` 保存背景知识，`task` 保存待办，`decision` 保存已确认的决策，`message` 保存协作消息。
@@ -104,8 +149,8 @@ curl "$BASE_URL/api/v1/projects/$PROJECT_ID/items" \
 | 状态 | 处理方式 |
 | --- | --- |
 | 400 | 检查 JSON 字段、长度、版本号或查询参数 |
-| 401 | 缺少 Key，或 Key 无效 / 已撤销 |
-| 403 | Key 权限不足，需要所有者分配合适权限 |
+| 401 | 缺少凭据，Key 无效 / 已撤销，或 OAuth 令牌过期、撤销或资源不匹配；OAuth 客户端读取 WWW-Authenticate |
+| 403 | Key 或 OAuth 权限不足，需要所有者分配权限或重新明确授权合适 scope |
 | 404 | 资源不存在、已删除，或不属于当前用户 / 项目 |
 | 409 | 版本冲突，重新读取后合并；创建用户时也可能是邮箱重复 |
 | 413 | JSON 超过 128 KiB 或附件超过 10 MiB |

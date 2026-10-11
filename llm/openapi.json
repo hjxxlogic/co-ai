@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "co-ai REST API",
-    "version": "0.2.0",
-    "description": "Multi-user project coordination. Project keys can only access their assigned project. Read keys cannot write. User keys manage owned projects. See /llm/API.md. HTTPS only: HTTP API requests return 426 without executing handlers. Disabled users cannot access any API. Archived projects are unavailable to project keys."
+    "version": "0.3.0",
+    "description": "Multi-user project coordination. Project keys can only access their assigned project. Read keys cannot write. User keys manage owned projects. See /llm/API.md. HTTPS only: HTTP API requests return 426 without executing handlers. Disabled users cannot access any API. Archived projects are unavailable to project keys. OAuth authorization-code flow with mandatory S256 PKCE is also supported; access tokens are bound to the REST or MCP resource. Discover /.well-known/oauth-authorization-server and /.well-known/oauth-protected-resource/api/v1."
   },
   "servers": [
     {
@@ -13,6 +13,11 @@
   "security": [
     {
       "ApiKey": []
+    },
+    {
+      "OAuth": [
+        "read"
+      ]
     }
   ],
   "paths": {
@@ -68,7 +73,12 @@
         },
         "security": [
           {
-            "AdminToken": []
+            "ApiKey": []
+          },
+          {
+            "OAuth": [
+              "admin"
+            ]
           }
         ],
         "requestBody": {
@@ -162,7 +172,12 @@
         ],
         "security": [
           {
-            "AdminToken": []
+            "ApiKey": []
+          },
+          {
+            "OAuth": [
+              "admin"
+            ]
           }
         ]
       }
@@ -203,7 +218,17 @@
           "426": {
             "description": "HTTPS required. HTTP requests do not execute operations."
           }
-        }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "OAuth": [
+              "manage"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/projects": {
@@ -280,6 +305,16 @@
               "default": false
             }
           }
+        ],
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "OAuth": [
+              "manage"
+            ]
+          }
         ]
       },
       "post": {
@@ -327,7 +362,17 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "OAuth": [
+              "manage"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/keys": {
@@ -369,7 +414,17 @@
           "426": {
             "description": "HTTPS required. HTTP requests do not execute operations."
           }
-        }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "OAuth": [
+              "manage"
+            ]
+          }
+        ]
       },
       "post": {
         "operationId": "post_api_v1_keys",
@@ -416,7 +471,17 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "OAuth": [
+              "manage"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/keys/{keyId}": {
@@ -449,6 +514,16 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "OAuth": [
+              "manage"
+            ]
           }
         ]
       }
@@ -498,6 +573,16 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "OAuth": [
+              "read"
+            ]
           }
         ]
       },
@@ -556,7 +641,17 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "OAuth": [
+              "manage"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/projects/{projectId}/keys": {
@@ -615,7 +710,17 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "OAuth": [
+              "manage"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/projects/{projectId}/llm": {
@@ -663,6 +768,16 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "OAuth": [
+              "read"
+            ]
           }
         ]
       }
@@ -915,6 +1030,16 @@
             },
             "description": "Inclusive updated_at lower bound; timezone required. Finds edits to older items. Defaults to updated_oldest ordering. Poll all pages without max_items, then reuse sync_until as the next inclusive boundary and deduplicate by item ID/version. Include deleted items to observe tombstones."
           }
+        ],
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "OAuth": [
+              "read"
+            ]
+          }
         ]
       },
       "post": {
@@ -972,7 +1097,17 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "OAuth": [
+              "write"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/projects/{projectId}/items/{itemId}": {
@@ -1028,6 +1163,16 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "OAuth": [
+              "read"
+            ]
           }
         ]
       },
@@ -1094,7 +1239,17 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "OAuth": [
+              "write"
+            ]
+          }
+        ]
       },
       "delete": {
         "operationId": "delete_api_v1_projects_projectId_items_itemId",
@@ -1144,7 +1299,17 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "OAuth": [
+              "write"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/projects/{projectId}/attachments": {
@@ -1221,6 +1386,16 @@
             },
             "description": "Use the previous next_cursor. IDs sort lexicographically; restart pagination to fully resync."
           }
+        ],
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "OAuth": [
+              "read"
+            ]
+          }
         ]
       },
       "post": {
@@ -1291,7 +1466,17 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "OAuth": [
+              "write"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/projects/{projectId}/attachments/{attachmentId}": {
@@ -1341,6 +1526,16 @@
               "type": "string"
             }
           }
+        ],
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "OAuth": [
+              "read"
+            ]
+          }
         ]
       },
       "delete": {
@@ -1380,6 +1575,16 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "OAuth": [
+              "write"
+            ]
           }
         ]
       }
@@ -1443,7 +1648,12 @@
         },
         "security": [
           {
-            "AdminToken": []
+            "ApiKey": []
+          },
+          {
+            "OAuth": [
+              "admin"
+            ]
           }
         ]
       }
@@ -1497,7 +1707,12 @@
         ],
         "security": [
           {
-            "AdminToken": []
+            "ApiKey": []
+          },
+          {
+            "OAuth": [
+              "admin"
+            ]
           }
         ]
       }
@@ -1585,6 +1800,16 @@
             },
             "description": "Include archived roles for historical attribution."
           }
+        ],
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "OAuth": [
+              "read"
+            ]
+          }
         ]
       },
       "post": {
@@ -1642,7 +1867,17 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "OAuth": [
+              "manage"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/projects/{projectId}/roles/{roleId}": {
@@ -1710,7 +1945,17 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "OAuth": [
+              "manage"
+            ]
+          }
+        ]
       }
     },
     "/health": {
@@ -1972,6 +2217,22 @@
         "type": "apiKey",
         "in": "cookie",
         "name": "__Host-coai_session"
+      },
+      "OAuth": {
+        "type": "oauth2",
+        "flows": {
+          "authorizationCode": {
+            "authorizationUrl": "https://co-ai.xlogic.cc/oauth/authorize",
+            "tokenUrl": "https://co-ai.xlogic.cc/oauth/token",
+            "refreshUrl": "https://co-ai.xlogic.cc/oauth/token",
+            "scopes": {
+              "read": "Read the selected project",
+              "write": "Read and write the selected project",
+              "manage": "Manage all owned projects, roles and API keys",
+              "admin": "Administrator user management (separate consent)"
+            }
+          }
+        }
       }
     },
     "schemas": {

@@ -6,6 +6,7 @@ import type { AppEnv, Principal } from './types';
 import { digest, resetUserKey } from './security';
 import { body } from './http';
 import { usernameField, passwordField, verifyPassword, hashPassword, passwordActor, checkUsername } from './passwords';
+import { oauthIdentity, requireOAuthScope } from './oauth-security';
 
 const cookieName = (_c: Context<AppEnv>) => '__Host-coai_session';
 const cookieOptions = (_c: Context<AppEnv>) => ({ path: '/', httpOnly: true, secure: true, sameSite: 'Strict' as const });
@@ -17,8 +18,8 @@ export const csrfGuard: MiddlewareHandler<AppEnv> = async (c, next) => {
   await next();
 };
 
-type Session = { role: 'admin' | 'user'; key_id: string | null; admin_hash: string | null; password_hash: string | null };
-async function session(c: Context<AppEnv>): Promise<Session | null> {
+export type Session = { role: 'admin' | 'user'; key_id: string | null; admin_hash: string | null; password_hash: string | null };
+export async function session(c: Context<AppEnv>): Promise<Session | null> {
   const token = getCookie(c, cookieName(c));
   if (!token) return null;
   return c.env.DB.prepare('SELECT role, key_id, admin_hash, password_hash FROM web_sessions WHERE token_hash = ? AND expires_at > ?')
@@ -33,6 +34,12 @@ export async function sessionPrincipal(c: Context<AppEnv>): Promise<Principal | 
 }
 
 export async function requireAdmin(c: Context<AppEnv>) {
+  const oauth = await oauthIdentity(c, 'admin');
+  if (oauth) {
+    requireOAuthScope(c, oauth, 'admin');
+    if (oauth.adminHash) return;
+    throw new HTTPException(403, { message: 'Administrator OAuth authorization required' });
+  }
   if (!c.env.ADMIN_TOKEN || c.env.ADMIN_TOKEN.length < 32) throw new HTTPException(503, { message: 'Administrator provisioning is not configured' });
   const expected = await digest(c.env.ADMIN_TOKEN);
   const authorization = c.req.header('Authorization');

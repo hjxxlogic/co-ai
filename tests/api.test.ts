@@ -4,6 +4,10 @@ import { readFile } from 'node:fs/promises';
 import app from '../src/index';
 import type { Env } from '../src/types';
 import { digest } from '../src/security';
+import { UnauthorizedError, type OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import type { OAuthClientInformationMixed, OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js';
 
 let mf: Miniflare;
 let env: Env;
@@ -70,7 +74,7 @@ beforeAll(async () => {
   const bindings = await mf.getBindings();
   env = { ...bindings, ADMIN_TOKEN: admin, DOCS: { fetch: async (req: Request) => new Response(new URL(req.url).pathname.endsWith('.html') ? '<!doctype html><h1>AI docs</h1><a href="/llm/API.html">API</a>' : 'API docs', { headers: { 'Content-Type': new URL(req.url).pathname.endsWith('.html') ? 'text/html; charset=utf-8' : 'text/plain; charset=utf-8' } }) } } as unknown as Env;
   // D1 exec expects each statement on one line.
-  for (const file of ['0001_initial.sql', '0002_web_management.sql', '0003_roles_and_tags.sql', '0004_password_login.sql', '0005_recipient_roles.sql']) {
+  for (const file of ['0001_initial.sql', '0002_web_management.sql', '0003_roles_and_tags.sql', '0004_password_login.sql', '0005_recipient_roles.sql', '0006_oauth.sql']) {
     if (file === '0004_password_login.sql') {
       const time = '2025-01-01T00:00:00.000Z';
       await env.DB.batch([
@@ -697,6 +701,7 @@ async function mcpTool(name: string, args: Record<string, unknown> = {}, headers
     method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', ...headers },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
   }, env);
+  if (response.status === 401 || response.status === 403) return { status: response.status, body: await response.json(), isError: true, response };
   expect(response.status).toBe(200);
   const message = await response.json() as any;
   expect(message.error, name).toBeUndefined();
@@ -816,4 +821,231 @@ describe('MCP tools with real D1 and R2 bindings', () => {
     expect((await mcpTool('web_session', {}, { Cookie: passwordCookie, Origin: 'https://co-ai.test' })).status).toBe(401);
     expect((await mcpTool('post_api_admin_users_userId_reset_key', { userId }, mcpBearer(admin))).status).toBe(201);
   });
+});
+
+const oauthRedirect = 'http://127.0.0.1:32123/callback';
+const oauthVerifier = 'test-pkce-verifier-with-at-least-43-characters-1234567890';
+async function oauthForm(path: string, input: Record<string, string>) {
+  return app.request('https://co-ai.test' + path, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(input).toString() }, env);
+}
+async function registerOAuth(name = 'Test OAuth client') {
+  const response = await request('/oauth/register', undefined, 'POST', { client_name: name, redirect_uris: [oauthRedirect], token_endpoint_auth_method: 'none' });
+  expect(response.status).toBe(201);
+  return (await response.json() as any).client_id as string;
+}
+async function pkceChallenge(value: string) {
+  return Buffer.from(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))).toString('base64url');
+}
+async function startOAuth(clientId: string, cookie: string, resource: string, scope = 'read', verifier = oauthVerifier) {
+  const query = new URLSearchParams({ client_id: clientId, redirect_uri: oauthRedirect, response_type: 'code', code_challenge: await pkceChallenge(verifier), code_challenge_method: 'S256', state: 'client-state', resource, scope });
+  const response = await web('/oauth/authorize?' + query.toString(), cookie);
+  expect(response.status).toBe(200);
+  expect(response.headers.get('Content-Security-Policy')).toContain("frame-ancestors 'none'");
+  expect(response.headers.get('Referrer-Policy')).toBe('no-referrer');
+  const id = /data-request="([a-f0-9]{64})"/.exec(await response.text())![1];
+  const details = await web('/oauth/requests/' + id, cookie);
+  expect(details.status).toBe(200);
+  return id;
+}
+async function approveOAuth(id: string, cookie: string, projectId?: string) {
+  const response = await web('/oauth/consent', cookie, 'POST', { request_id: id, decision: 'approve', project_id: projectId ?? null });
+  expect(response.status).toBe(200);
+  const callback = new URL((await response.json() as any).data.redirect);
+  expect(callback.searchParams.get('state')).toBe('client-state');
+  expect(callback.searchParams.get('iss')).toBe('https://co-ai.test');
+  return callback.searchParams.get('code')!;
+}
+async function oauthTokens(clientId: string, code: string, resource: string, verifier = oauthVerifier) {
+  const response = await oauthForm('/oauth/token', { grant_type: 'authorization_code', client_id: clientId, redirect_uri: oauthRedirect, code, code_verifier: verifier, resource });
+  expect(response.status).toBe(200);
+  return await response.json() as any;
+}
+
+describe('OAuth authorization server and protected resources', () => {
+  it('discovers OAuth endpoints and challenges REST/MCP clients at HTTP level', async () => {
+    const metadata = await (await request('/.well-known/oauth-authorization-server')).json() as any;
+    expect(metadata.issuer).toBe('https://co-ai.test');
+    expect(metadata.code_challenge_methods_supported).toEqual(['S256']);
+    expect(metadata.token_endpoint_auth_methods_supported).toEqual(['none']);
+    for (const [path, resource] of [['/mcp', '/mcp'], ['/api/v1', '/api/v1'], ['/api/admin', '/api/admin']]) {
+      const protectedResource = await (await request('/.well-known/oauth-protected-resource' + path)).json() as any;
+      expect(protectedResource.resource).toBe('https://co-ai.test' + resource);
+      expect(protectedResource.authorization_servers).toEqual(['https://co-ai.test']);
+    }
+    const denied = await request('/api/v1/projects');
+    expect(denied.status).toBe(401);
+    expect(denied.headers.get('WWW-Authenticate')).toContain('resource_metadata="https://co-ai.test/.well-known/oauth-protected-resource/api/v1"');
+    const tool = await mcpTool('get_api_v1_projects');
+    expect(tool.response.status).toBe(401);
+    expect(tool.response.headers.get('WWW-Authenticate')).toContain('oauth-protected-resource/mcp');
+    for (const path of ['/oauth/register', '/oauth/token', '/oauth/revoke', '/.well-known/oauth-authorization-server']) {
+      expect((await app.request('http://co-ai.test' + path, { method: 'POST' }, env)).status).toBe(426);
+    }
+  });
+
+  it('grants project REST reads with PKCE, audience binding, explicit consent and one-time codes', async () => {
+    const owner = await provision('oauth-reader@test.com'), projectId = await createProject(owner), other = await createProject(owner);
+    const cookie = await login('user', owner), clientId = await registerOAuth();
+    const resource = 'https://co-ai.test/api/v1';
+    const id = await startOAuth(clientId, cookie, resource);
+    expect((await web('/oauth/consent', cookie, 'POST', { request_id: id, decision: 'approve', project_id: projectId }, 'https://evil.test')).status).toBe(403);
+    const otherCookie = await login('user', owner);
+    expect((await web('/oauth/requests/' + id, otherCookie)).status).toBe(403);
+    const code = await approveOAuth(id, cookie, projectId);
+    expect((await web('/oauth/consent', cookie, 'POST', { request_id: id, decision: 'approve', project_id: projectId })).status).toBe(400);
+    const bad = await oauthForm('/oauth/token', { grant_type: 'authorization_code', client_id: clientId, code, redirect_uri: oauthRedirect, code_verifier: 'wrong-verifier-with-at-least-43-characters-123456789', resource });
+    expect(bad.status).toBe(400); expect((await bad.json() as any).error).toBe('invalid_grant');
+    const tokens = await oauthTokens(clientId, code, resource);
+    expect(tokens.token_type).toBe('Bearer'); expect(tokens.expires_in).toBe(3600); expect(tokens.scope).toBe('read');
+    expect((await request(`/api/v1/projects/${projectId}`, tokens.access_token)).status).toBe(200);
+    expect((await request(`/api/v1/projects/${other}`, tokens.access_token)).status).toBe(404);
+    const write = await request(`/api/v1/projects/${projectId}/items`, tokens.access_token, 'POST', { title: 'Denied' });
+    expect(write.status).toBe(403); expect(write.headers.get('WWW-Authenticate')).toContain('scope="write"');
+    expect((await request('/api/v1/keys', tokens.access_token)).status).toBe(403);
+    expect((await mcpTool('get_health', {}, mcpBearer(tokens.access_token))).status).toBe(401);
+    const replay = await oauthForm('/oauth/token', { grant_type: 'authorization_code', client_id: clientId, code, redirect_uri: oauthRedirect, code_verifier: oauthVerifier, resource });
+    expect(replay.status).toBe(400);
+    expect((await request(`/api/v1/projects/${projectId}`, tokens.access_token)).status).toBe(401);
+    const rows = await env.DB.prepare('SELECT token_hash FROM oauth_access_tokens').all<{ token_hash: string }>();
+    expect(rows.results.some((row) => row.token_hash === tokens.access_token)).toBe(false);
+  });
+
+  it('uses MCP access tokens through the internal REST dispatcher without accepting them on public REST URLs', async () => {
+    const owner = await provision('oauth-mcp@test.com'), projectId = await createProject(owner);
+    const cookie = await login('user', owner), clientId = await registerOAuth('MCP OAuth'), resource = 'https://co-ai.test/mcp';
+    const code = await approveOAuth(await startOAuth(clientId, cookie, resource, 'read write'), cookie, projectId);
+    const tokens = await oauthTokens(clientId, code, resource);
+    const headers = mcpBearer(tokens.access_token);
+    const crossOrigin = await mcpTool('get_api_v1_projects_projectId', { projectId }, { ...headers, Origin: 'https://client.test' });
+    expect(crossOrigin.status).toBe(200);
+    expect(crossOrigin.response.headers.get('Access-Control-Allow-Origin')).toBe('*');
+    const created = await mcpTool('post_api_v1_projects_projectId_items', { projectId, body: { title: 'OAuth task', kind: 'task' } }, headers);
+    expect(created.status).toBe(201);
+    expect((await mcpTool('get_api_v1_projects_projectId_items', { projectId }, headers)).body.data[0].title).toBe('OAuth task');
+    expect((await request(`/api/v1/projects/${projectId}`, tokens.access_token)).status).toBe(401);
+    const escalate = await mcpTool('createProjectRole', { projectId, body: { name: 'Escalation' } }, headers);
+    expect(escalate.status).toBe(403); expect(escalate.response.status).toBe(403);
+    expect(escalate.response.headers.get('WWW-Authenticate')).toContain('oauth-protected-resource/mcp');
+    expect(escalate.response.headers.get('WWW-Authenticate')).toContain('scope="manage"');
+    const expired = await env.DB.prepare('UPDATE oauth_access_tokens SET expires_at = ? WHERE token_hash = ?').bind('2000-01-01T00:00:00Z', await digest(tokens.access_token)).run();
+    expect(expired.meta.changes).toBe(1);
+    expect((await mcpTool('get_health', {}, headers)).status).toBe(401);
+  });
+
+  it('rotates refresh tokens atomically, detects replay and revokes the whole grant', async () => {
+    const owner = await provision('oauth-refresh@test.com'), projectId = await createProject(owner), cookie = await login('user', owner);
+    const clientId = await registerOAuth('Refresh'), resource = 'https://co-ai.test/api/v1';
+    const initial = await oauthTokens(clientId, await approveOAuth(await startOAuth(clientId, cookie, resource), cookie, projectId), resource);
+    const input = { grant_type: 'refresh_token', client_id: clientId, refresh_token: initial.refresh_token, resource };
+    const wrongResource = await oauthForm('/oauth/token', { ...input, resource: 'https://co-ai.test/mcp' });
+    expect(wrongResource.status).toBe(400);
+    const response = await oauthForm('/oauth/token', input);
+    expect(response.status).toBe(200);
+    const refreshed = await response.json() as any;
+    expect(refreshed.refresh_token).not.toBe(initial.refresh_token);
+    expect((await request(`/api/v1/projects/${projectId}`, refreshed.access_token)).status).toBe(200);
+    expect((await oauthForm('/oauth/token', input)).status).toBe(400);
+    expect((await request(`/api/v1/projects/${projectId}`, refreshed.access_token)).status).toBe(401);
+    expect((await oauthForm('/oauth/token', { ...input, refresh_token: refreshed.refresh_token })).status).toBe(400);
+  });
+
+  it('supports management and administrator grants, revocation, key revocation and user disablement', async () => {
+    const owner = await provision('oauth-management@test.com'), cookie = await login('user', owner), clientId = await registerOAuth('Management');
+    const resource = 'https://co-ai.test/api/v1';
+    const tokens = await oauthTokens(clientId, await approveOAuth(await startOAuth(clientId, cookie, resource, 'manage'), cookie), resource);
+    const created = await request('/api/v1/projects', tokens.access_token, 'POST', { name: 'OAuth created' });
+    expect(created.status).toBe(201);
+    const keys = await (await request('/api/v1/keys', tokens.access_token)).json() as any;
+    const actor = keys.data.find((key: any) => key.name === 'OAuth: Management');
+    expect(actor).toBeTruthy();
+    expect((await request(`/api/v1/keys/${actor.id}`, owner, 'DELETE')).status).toBe(204);
+    expect((await request('/api/v1/projects', tokens.access_token)).status).toBe(401);
+    const adminCookie = await login('admin', admin), adminResource = 'https://co-ai.test/api/admin';
+    const adminTokens = await oauthTokens(clientId, await approveOAuth(await startOAuth(clientId, adminCookie, adminResource, 'admin'), adminCookie), adminResource);
+    expect((await request('/api/admin/users', adminTokens.access_token)).status).toBe(200);
+    expect((await request('/api/v1/projects', adminTokens.access_token)).status).toBe(401);
+    const revoked = await oauthForm('/oauth/revoke', { client_id: clientId, token: adminTokens.refresh_token });
+    expect(revoked.status).toBe(200);
+    expect((await request('/api/admin/users', adminTokens.access_token)).status).toBe(401);
+    expect((await oauthForm('/oauth/revoke', { client_id: clientId, token: 'unknown' })).status).toBe(200);
+    const user = await (await request('/api/v1/me', owner)).json() as any;
+    const next = await oauthTokens(clientId, await approveOAuth(await startOAuth(clientId, cookie, resource, 'manage'), cookie), resource);
+    await request(`/api/admin/users/${user.data.id}`, admin, 'PATCH', { disabled: true });
+    expect((await request('/api/v1/projects', next.access_token)).status).toBe(401);
+  });
+
+  it('rejects unsafe clients, unregistered redirects, unsupported flows, foreign resources, denied or expired requests and project escalation', async () => {
+    const invalidClient = await request('/oauth/register', undefined, 'POST', { redirect_uris: ['http://evil.test/callback'] });
+    expect(invalidClient.status).toBe(400); expect((await invalidClient.json() as any).error).toBe('invalid_redirect_uri');
+    const clientId = await registerOAuth('Validation'), owner = await provision('oauth-validation@test.com'), cookie = await login('user', owner);
+    const resource = 'https://co-ai.test/api/v1';
+    const base = { client_id: clientId, redirect_uri: oauthRedirect, response_type: 'code', code_challenge: await pkceChallenge(oauthVerifier), code_challenge_method: 'S256', resource, scope: 'read' };
+    for (const override of [{ redirect_uri: 'https://evil.test/callback' }, { response_type: 'token' }, { code_challenge_method: 'plain' }, { resource: 'https://evil.test/mcp' }, { scope: 'unknown' }, { scope: 'admin' }]) {
+      const denied = await request('/oauth/authorize?' + new URLSearchParams({ ...base, ...override }));
+      expect(denied.status).toBe(400); expect(denied.headers.get('Location')).toBeNull();
+    }
+    expect((await request('/oauth/authorize?' + new URLSearchParams(base) + '&client_id=' + clientId)).status).toBe(400);
+    const another = await provision('oauth-other@test.com'), otherProject = await createProject(another);
+    const id = await startOAuth(clientId, cookie, resource);
+    expect((await web('/oauth/consent', cookie, 'POST', { request_id: id, decision: 'approve', project_id: otherProject })).status).toBe(403);
+    const denial = await web('/oauth/consent', cookie, 'POST', { request_id: id, decision: 'deny' });
+    expect(denial.status).toBe(200); expect(new URL((await denial.json() as any).data.redirect).searchParams.get('error')).toBe('access_denied');
+    const expired = await startOAuth(clientId, cookie, resource);
+    await env.DB.prepare('UPDATE oauth_requests SET expires_at = ? WHERE id = ?').bind('2000-01-01T00:00:00Z', expired).run();
+    expect((await web('/oauth/requests/' + expired, cookie)).status).toBe(400);
+    const options = await app.request('https://co-ai.test/oauth/token', { method: 'OPTIONS', headers: { Origin: 'https://client.test' } }, env);
+    expect(options.status).toBe(204); expect(options.headers.get('Access-Control-Allow-Origin')).toBe('*');
+  });
+});
+
+it('completes discovery, dynamic registration, PKCE and OAuth-authenticated MCP calls with the official SDK', async () => {
+  const owner = await provision('oauth-sdk@test.com'), projectId = await createProject(owner), cookie = await login('user', owner);
+  let information: OAuthClientInformationMixed | undefined, tokens: OAuthTokens | undefined, verifier = '', authorizationUrl: URL | undefined;
+  const provider: OAuthClientProvider = {
+    redirectUrl: oauthRedirect,
+    clientMetadata: { client_name: 'Official SDK OAuth', redirect_uris: [oauthRedirect], token_endpoint_auth_method: 'none', grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'] },
+    state: () => 'sdk-state', clientInformation: () => information,
+    saveClientInformation: (value) => { information = value; }, tokens: () => tokens,
+    saveTokens: (value) => { tokens = value; }, saveCodeVerifier: (value) => { verifier = value; }, codeVerifier: () => verifier,
+    redirectToAuthorization: (url) => { authorizationUrl = url; },
+  };
+  const fetchFn = async (url: string | URL, init?: RequestInit) => app.request(String(url), init, env);
+  const client = new Client({ name: 'oauth-sdk-test', version: '1' });
+  const transport = new StreamableHTTPClientTransport(new URL('https://co-ai.test/mcp'), { authProvider: provider, fetch: fetchFn });
+  try {
+    await client.connect(transport);
+    await expect(client.callTool({ name: 'get_api_v1_projects_projectId', arguments: { projectId } })).rejects.toThrow(UnauthorizedError);
+    expect(authorizationUrl!.searchParams.get('resource')).toBe('https://co-ai.test/mcp');
+    expect(authorizationUrl!.searchParams.get('scope')).toBe('read');
+    const page = await app.request(authorizationUrl!.href, { headers: { Cookie: cookie } }, env);
+    expect(page.status).toBe(200);
+    const id = /data-request="([a-f0-9]{64})"/.exec(await page.text())![1];
+    expect((await web('/oauth/requests/' + id, cookie)).status).toBe(200);
+    const consent = await web('/oauth/consent', cookie, 'POST', { request_id: id, decision: 'approve', project_id: projectId });
+    const redirect = new URL((await consent.json() as any).data.redirect);
+    expect(redirect.searchParams.get('state')).toBe('sdk-state');
+    await transport.finishAuth(redirect.searchParams.get('code')!);
+    const result = await client.callTool({ name: 'get_api_v1_projects_projectId', arguments: { projectId } });
+    expect(result.structuredContent).toMatchObject({ status: 200, body: { data: { id: projectId } } });
+  } finally { await client.close(); }
+});
+
+it('prevents concurrent refresh from keeping a live authorization and invalidates grants after password/admin credential changes', async () => {
+  const owner = await provision('oauth-replay-race@test.com'), cookie = await login('user', owner), projectId = await createProject(owner);
+  const clientId = await registerOAuth('Race and credentials'), resource = 'https://co-ai.test/api/v1';
+  const initial = await oauthTokens(clientId, await approveOAuth(await startOAuth(clientId, cookie, resource), cookie, projectId), resource);
+  const input = { grant_type: 'refresh_token', client_id: clientId, refresh_token: initial.refresh_token, resource };
+  const responses = await Promise.all([oauthForm('/oauth/token', input), oauthForm('/oauth/token', input)]);
+  expect(responses.filter((response) => response.status === 200)).toHaveLength(1);
+  const success = await responses.find((response) => response.status === 200)!.json() as any;
+  expect((await request(`/api/v1/projects/${projectId}`, success.access_token)).status).toBe(401);
+  const passwordGrant = await oauthTokens(clientId, await approveOAuth(await startOAuth(clientId, cookie, resource), cookie, projectId), resource);
+  expect((await web('/api/web/credentials', cookie, 'PUT', { username: 'oauth_password_change', password: 'oauth-new-password-12345' })).status).toBe(204);
+  expect((await request(`/api/v1/projects/${projectId}`, passwordGrant.access_token)).status).toBe(401);
+  expect((await oauthForm('/oauth/token', { ...input, refresh_token: passwordGrant.refresh_token })).status).toBe(400);
+  const adminCookie = await login('admin', admin), adminResource = 'https://co-ai.test/api/admin';
+  const adminGrant = await oauthTokens(clientId, await approveOAuth(await startOAuth(clientId, adminCookie, adminResource, 'admin'), adminCookie), adminResource);
+  const rotatedEnv = { ...env, ADMIN_TOKEN: 'a-new-administrator-secret-with-32-characters' };
+  const denied = await app.request('https://co-ai.test/api/admin/users', { headers: { Authorization: 'Bearer ' + adminGrant.access_token } }, rotatedEnv);
+  expect(denied.status).toBe(401);
 });

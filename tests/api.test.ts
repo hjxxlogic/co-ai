@@ -7,6 +7,8 @@ import { digest } from '../src/security';
 
 let mf: Miniflare;
 let env: Env;
+const migrationIds = Object.fromEntries(['users', 'api_keys', 'projects', 'roles', 'items', 'attachments'].map((table) => [table, crypto.randomUUID()]));
+let migrationRows: Record<string, Record<string, unknown>> = {};
 const admin = 'test-admin-secret-with-at-least-32-characters';
 
 async function request(path: string, key?: string, method = 'GET', input?: unknown) {
@@ -68,9 +70,22 @@ beforeAll(async () => {
   const bindings = await mf.getBindings();
   env = { ...bindings, ADMIN_TOKEN: admin, DOCS: { fetch: async () => new Response('API docs') } } as unknown as Env;
   // D1 exec expects each statement on one line.
-  for (const file of ['0001_initial.sql', '0002_web_management.sql', '0003_roles_and_tags.sql']) {
+  for (const file of ['0001_initial.sql', '0002_web_management.sql', '0003_roles_and_tags.sql', '0004_password_login.sql', '0005_recipient_roles.sql']) {
+    if (file === '0004_password_login.sql') {
+      const time = '2025-01-01T00:00:00.000Z';
+      await env.DB.batch([
+        env.DB.prepare('INSERT INTO users (id, email, name, created_at) VALUES (?, ?, ?, ?)').bind(migrationIds.users, 'legacy-migration@test.com', 'Legacy', time),
+        env.DB.prepare('INSERT INTO api_keys (id, user_id, name, key_hash, permission, created_at) VALUES (?, ?, ?, ?, ?, ?)').bind(migrationIds.api_keys, migrationIds.users, 'Legacy Key', await digest('legacy-migration-key'), 'write', time),
+        env.DB.prepare('INSERT INTO projects (id, owner_id, name, instructions, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)').bind(migrationIds.projects, migrationIds.users, 'Legacy Project', 'Keep instructions', time, time),
+        env.DB.prepare('INSERT INTO roles (id, project_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').bind(migrationIds.roles, migrationIds.projects, 'Legacy Sender', time, time),
+        env.DB.prepare('INSERT INTO items (id, project_id, title, content, version, role_id, tags, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(migrationIds.items, migrationIds.projects, 'Legacy Message', 'Keep content', 7, migrationIds.roles, '["stable"]', migrationIds.api_keys, migrationIds.api_keys, time, time),
+        env.DB.prepare('INSERT INTO attachments (id, project_id, filename, object_key, content_type, size, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(migrationIds.attachments, migrationIds.projects, 'legacy.txt', 'migration/legacy.txt', 'text/plain', 6, migrationIds.api_keys, time),
+      ]);
+      await env.FILES.put('migration/legacy.txt', 'Legacy');
+      for (const [table, id] of Object.entries(migrationIds)) migrationRows[table] = (await env.DB.prepare(`SELECT * FROM ${table} WHERE id = ?`).bind(id).first<Record<string, unknown>>())!;
+    }
     const sql = await readFile(new URL('../migrations/' + file, import.meta.url), 'utf8');
-    await env.DB.exec(sql.split(';').map((s) => s.replace(/\s+/g, ' ').trim()).filter(Boolean).join(';\n') + ';');
+    await env.DB.exec(sql.replace(/^--.*$/gm, '').split(';').map((s) => s.replace(/\s+/g, ' ').trim()).filter(Boolean).join(';\n') + ';');
   }
 });
 
@@ -126,7 +141,7 @@ describe('HTTPS Web sessions and management', () => {
     expect((await web('/api/web/session', expired)).status).toBe(401);
   });
 
-  it('lets administrators edit and disable users and rotate every key and session', async () => {
+  it('lets administrators edit and disable users and rotate user keys while preserving project keys and data', async () => {
     const adminCookie = await login('admin', admin);
     expect((await web('/api/admin/users', adminCookie)).status).toBe(200);
     expect((await web('/api/v1/projects', adminCookie)).status).toBe(401);
@@ -149,7 +164,7 @@ describe('HTTPS Web sessions and management', () => {
     const newKey = (await reset.json() as any).data.api_key;
     expect((await web('/api/web/session', freshSession)).status).toBe(401);
     expect((await request('/api/v1/projects', key.api_key)).status).toBe(401);
-    expect((await request(`/api/v1/projects/${id}`, agent.api_key)).status).toBe(401);
+    expect((await request(`/api/v1/projects/${id}`, agent.api_key)).status).toBe(200);
     expect((await request('/api/v1/projects', newKey)).status).toBe(200);
     const metadata = (await (await request('/api/v1/keys', newKey)).json() as any).data;
     expect(metadata.every((k: any) => !('api_key' in k) && !('key_hash' in k))).toBe(true);
@@ -262,7 +277,8 @@ describe('multi-user project API with D1 and R2', () => {
     expect((await request(`${base}/${data.id}`, read, 'DELETE')).status).toBe(403);
     expect((await request(`${base}/${data.id}`, key, 'DELETE')).status).toBe(204);
     expect((await request(`${base}/${data.id}`, key)).status).toBe(404);
-    expect((await env.FILES.list()).objects).toHaveLength(0);
+    const userId = (await (await request('/api/v1/me', owner)).json() as any).data.id;
+    expect((await env.FILES.list({ prefix: `${userId}/${id}/` })).objects).toHaveLength(0);
   });
 
   it('provides project-contained instructions and safely serves API docs', async () => {
@@ -358,5 +374,279 @@ describe('project roles, message TAGs and search windows', () => {
     expect((await request(`${base}/${item.id}`, writer, 'DELETE', { version: 2 })).status).toBe(204);
     const deleted = await (await request(base + '?include_deleted=true&tag=urgent', writer)).json() as any;
     expect(deleted.data.find((i: any) => i.id === item.id).deleted_at).toBeTruthy();
+  });
+});
+
+describe('username/password management', () => {
+  const password = 'initial-password-123';
+  const nextPassword = 'changed-password-456';
+  async function passwordLogin(username: string, secret = password) {
+    return web('/api/web/login', undefined, 'POST', { role: 'user', username, password: secret });
+  }
+  function cookie(res: Response) {
+    expect(res.status).toBe(200);
+    const value = res.headers.get('Set-Cookie')!;
+    expect(value).toContain('HttpOnly'); expect(value).toContain('Secure'); expect(value).toContain('SameSite=Strict');
+    return value.split(';')[0];
+  }
+  it('supports password login, editing and key rotation without changing project records or AI access', async () => {
+    const owner = await provision('password-owner@test.com');
+    const ownerCookie = await login('user', owner);
+    const project = await createProject(owner), role = await createRole(owner, project, 'Writer');
+    const agent = (await projectKey(owner, project)).api_key;
+    const base = `/api/v1/projects/${project}`;
+    const item = await request(base + '/items', agent, 'POST', { title: 'Preserve this', content: 'Context', role_id: role.id, tags: ['Stable'] });
+    expect(item.status).toBe(201);
+    const attachment = await app.request(`https://co-ai.test${base}/attachments?filename=keep.txt`, { method: 'POST', headers: { Authorization: `Bearer ${agent}`, 'Content-Type': 'text/plain' }, body: 'Keep attachment' }, env);
+    expect(attachment.status).toBe(201);
+    const attachmentId = (await attachment.json() as any).data.id;
+    const snapshot = async () => {
+      const tables = ['projects', 'roles', 'items', 'attachments'];
+      return Promise.all(tables.map((table) => env.DB.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()));
+    };
+    const original = await snapshot();
+    expect((await web('/api/web/credentials', ownerCookie, 'PUT', { username: 'Alice_Login', password })).status).toBe(204);
+    const stored = await env.DB.prepare('SELECT username, password_hash FROM users WHERE email = ?').bind('password-owner@test.com').first<any>();
+    expect(stored.username).toBe('alice_login'); expect(stored.password_hash).not.toContain(password); expect(stored.password_hash).toMatch(/^pbkdf2-sha256\$100000\$/);
+    expect((await passwordLogin('alice_login', 'wrong-password')).status).toBe(401);
+    expect((await passwordLogin('missing-user', password)).status).toBe(401);
+    expect((await web('/api/web/login', undefined, 'POST', { role: 'user', username: 'alice_login', password }, 'https://evil.test')).status).toBe(403);
+    const session = cookie(await passwordLogin('ALICE_LOGIN'));
+    expect((await web('/api/v1/projects', session)).status).toBe(200);
+    expect((await web('/api/admin/users', session)).status).toBe(401);
+    const me = (await (await web('/api/v1/me', session)).json() as any).data;
+    expect(me).not.toHaveProperty('password_hash');
+    const keys = (await (await web('/api/v1/keys', session)).json() as any).data;
+    expect(keys).toHaveLength(2);
+    const actor = await env.DB.prepare("SELECT id, key_hash FROM api_keys WHERE user_id = ? AND kind = 'password'").bind(me.id).first<any>();
+    expect((await web('/api/v1/keys/' + actor.id, session, 'DELETE')).status).toBe(404);
+    expect((await request('/api/v1/projects', actor.key_hash)).status).toBe(401);
+    expect((await web('/api/web/credentials', session, 'PUT', { username: 'alice_login', password: nextPassword, current_password: 'wrong' })).status).toBe(403);
+    expect((await web('/api/web/credentials', session, 'PUT', { username: 'alice_login', password: nextPassword, current_password: password })).status).toBe(204);
+    expect((await web('/api/web/session', session)).status).toBe(401);
+    expect((await passwordLogin('alice_login', password)).status).toBe(401);
+    const fresh = cookie(await passwordLogin('alice_login', nextPassword));
+    const reset = await web('/api/web/reset-key', fresh, 'POST');
+    expect(reset.status).toBe(201);
+    const newKey = (await reset.json() as any).data.api_key;
+    expect((await request('/api/v1/projects', owner)).status).toBe(401);
+    expect((await web('/api/web/session', ownerCookie)).status).toBe(401);
+    expect((await web('/api/web/session', fresh)).status).toBe(200);
+    expect((await request('/api/v1/projects', newKey)).status).toBe(200);
+    expect((await request(base, agent)).status).toBe(200);
+    expect(await (await request(base + '/attachments/' + attachmentId, agent)).text()).toBe('Keep attachment');
+    const updated = await snapshot();
+    expect(updated.map((r) => r.results)).toEqual(original.map((r) => r.results));
+    // Password-authenticated writes retain stable foreign-key attribution after password/key changes.
+    expect((await web(base + '/items', fresh, 'POST', { title: 'Password-authored' })).status).toBe(201);
+    const authored = await env.DB.prepare('SELECT created_by FROM items WHERE title = ?').bind('Password-authored').first<any>();
+    expect(authored.created_by).toBe(actor.id);
+    const upload = await app.request(`https://co-ai.test${base}/attachments?filename=password.txt`, { method: 'POST', headers: { Cookie: fresh, Origin: 'https://co-ai.test' }, body: 'Password upload' }, env);
+    expect(upload.status).toBe(201);
+    const other = await provision('password-other@test.com');
+    const otherCookie = await login('user', other);
+    expect((await web('/api/web/credentials', otherCookie, 'PUT', { username: 'ALICE_LOGIN', password })).status).toBe(409);
+    expect((await web(base, otherCookie)).status).toBe(404);
+    expect((await web('/api/web/credentials', undefined, 'PUT', { username: 'other', password })).status).toBe(401);
+  });
+
+  it('lets admins provision/reset credentials and preserves password sessions on user-key reset', async () => {
+    const adminCookie = await login('admin', admin);
+    const created = await web('/api/admin/users', adminCookie, 'POST', { email: 'password-managed@test.com', name: 'Managed', username: 'managed-login', password });
+    expect(created.status).toBe(201);
+    const { user, key } = (await created.json() as any).data;
+    expect(JSON.stringify(user)).not.toContain('password_hash');
+    const session = cookie(await passwordLogin('managed-login'));
+    const project = await createProject(key.api_key), agent = (await projectKey(key.api_key, project)).api_key;
+    expect((await web('/api/admin/users/' + user.id + '/reset-key', adminCookie, 'POST')).status).toBe(201);
+    expect((await web('/api/web/session', session)).status).toBe(200);
+    expect((await web('/api/admin/users/' + user.id, adminCookie, 'PATCH', { username: 'renamed-login', password: nextPassword })).status).toBe(200);
+    expect((await web('/api/web/session', session)).status).toBe(401);
+    expect((await passwordLogin('managed-login')).status).toBe(401);
+    const fresh = cookie(await passwordLogin('renamed-login', nextPassword));
+    expect((await request(`/api/v1/projects/${project}`, agent)).status).toBe(200);
+    expect((await web('/api/admin/users/' + user.id, adminCookie, 'PATCH', { disabled: true })).status).toBe(200);
+    expect((await passwordLogin('renamed-login', nextPassword)).status).toBe(401);
+    expect((await web('/api/web/session', fresh)).status).toBe(401);
+    expect((await web('/api/admin/users/' + user.id, adminCookie, 'PATCH', { disabled: false })).status).toBe(200);
+    expect((await web('/api/web/session', fresh)).status).toBe(401);
+    cookie(await passwordLogin('renamed-login', nextPassword));
+    expect((await web('/api/admin/users', adminCookie, 'POST', { email: 'duplicate-login@test.com', name: 'Duplicate', username: 'RENAMED-LOGIN', password })).status).toBe(409);
+    expect((await web('/api/admin/users', adminCookie, 'POST', { email: 'short-password@test.com', name: 'Short', username: 'short-login', password: 'short' })).status).toBe(400);
+    expect((await web('/api/admin/users', adminCookie, 'POST', { email: 'incomplete-login@test.com', name: 'Incomplete', username: 'incomplete-login' })).status).toBe(400);
+    const legacy = await provision('password-legacy@test.com');
+    const legacyId = (await (await request('/api/v1/me', legacy)).json() as any).data.id;
+    expect((await web('/api/admin/users/' + legacyId, adminCookie, 'PATCH', { password })).status).toBe(400);
+    expect((await web('/api/admin/users/' + legacyId, adminCookie, 'PATCH', { username: 'legacy-login', password })).status).toBe(200);
+    cookie(await passwordLogin('legacy-login'));
+  });
+
+  it('limits password login attempts and allows retries after the window expires', async () => {
+    for (let i = 0; i < 10; i++) expect((await passwordLogin('limited-login', 'wrong')).status).toBe(401);
+    expect((await passwordLogin('limited-login', 'wrong')).status).toBe(429);
+    await env.DB.prepare('UPDATE login_attempts SET expires_at = 0').run();
+    expect((await passwordLogin('limited-login', 'wrong')).status).toBe(401);
+  });
+});
+
+describe('sender and recipient roles', () => {
+  it('supports multiple project recipients, ALL broadcasts and combined sender/recipient search', async () => {
+    const owner = await provision('recipients@test.com'), project = await createProject(owner);
+    const sender = await createRole(owner, project, 'Developer'), tester = await createRole(owner, project, 'Tester'), manager = await createRole(owner, project, 'Manager');
+    const agent = (await projectKey(owner, project)).api_key;
+    const base = `/api/v1/projects/${project}/items`;
+    const create = async (title: string, recipients?: string[]) => {
+      const res = await request(base, agent, 'POST', { title, kind: 'message', role_id: sender.id, ...(recipients ? { recipient_role_ids: recipients } : {}), tags: ['api'] });
+      expect(res.status).toBe(201); return (await res.json() as any).data;
+    };
+    const directed = await create('Directed', [tester.id, manager.id, tester.id]);
+    expect(directed.role_id).toBe(sender.id); expect(directed.role_name).toBe('Developer');
+    expect(directed.recipient_role_ids).toEqual([tester.id, manager.id]);
+    expect(directed.recipient_roles).toEqual([{ id: tester.id, name: 'Tester' }, { id: manager.id, name: 'Manager' }]);
+    const broadcast = await create('Broadcast');
+    expect(broadcast.recipient_role_ids).toEqual(['ALL']); expect(broadcast.recipient_roles).toEqual([{ id: 'ALL', name: 'ALL' }]);
+    await create('Sender only', [sender.id]);
+    const search = async (query: string) => {
+      const res = await request(base + '?' + query, agent); expect(res.status).toBe(200); return (await res.json() as any);
+    };
+    const inbox = await search(`recipient_role_id=${tester.id}&role_id=${sender.id}&tag=api&kind=message&order=newest&limit=1&max_items=2`);
+    expect(inbox.total_count).toBe(2); expect(inbox.data).toHaveLength(1); expect(inbox.next_cursor).toBeTruthy();
+    const second = await search(`recipient_role_id=${tester.id}&role_id=${sender.id}&tag=api&kind=message&order=newest&limit=1&max_items=2&after=${inbox.next_cursor}`);
+    expect(new Set([inbox.data[0].id, second.data[0].id])).toEqual(new Set([directed.id, broadcast.id]));
+    expect(second.next_cursor).toBeNull();
+    expect((await request(base + `?recipient_role_id=${manager.id}&order=newest&after=${inbox.next_cursor}`, agent)).status).toBe(400);
+    expect((await search('recipient_role_id=ALL')).data.map((i: any) => i.id)).toEqual([broadcast.id]);
+    expect((await search(`recipient_role_id=${sender.id}`)).total_count).toBe(2);
+    const otherProject = await createProject(owner), foreign = await createRole(owner, otherProject, 'Foreign');
+    for (const recipients of [[], ['all'], ['invalid'], [foreign.id], ['ALL', foreign.id], Array(21).fill('ALL'), null]) {
+      expect((await request(base, agent, 'POST', { title: 'Invalid', recipient_role_ids: recipients })).status).toBe(400);
+    }
+    expect((await request(base + '?recipient_role_id=none', agent)).status).toBe(400);
+    const reader = (await projectKey(owner, project, 'read')).api_key;
+    expect((await request(base, reader, 'POST', { title: 'Forbidden', recipient_role_ids: ['ALL'] })).status).toBe(403);
+    const update = await request(base + '/' + directed.id, agent, 'PATCH', { version: directed.version, recipient_role_ids: ['ALL', tester.id] });
+    expect(update.status).toBe(200); expect((await update.json() as any).data.recipient_role_ids).toEqual(['ALL', tester.id]);
+    expect((await request(base + '/' + directed.id, agent, 'PATCH', { version: directed.version, recipient_role_ids: [manager.id] })).status).toBe(409);
+    expect((await (await request(base + '/' + directed.id, agent)).json() as any).data.recipient_role_ids).toEqual(['ALL', tester.id]);
+  });
+
+  it('preserves archived recipient labels and keeps addressing independent of access permissions', async () => {
+    const owner = await provision('archived-recipient@test.com'), project = await createProject(owner);
+    const recipient = await createRole(owner, project, 'Reviewer'), agent = (await projectKey(owner, project)).api_key;
+    const base = `/api/v1/projects/${project}`;
+    const created = await request(base + '/items', agent, 'POST', { title: 'Historical', recipient_role_ids: [recipient.id] });
+    const item = (await created.json() as any).data;
+    expect((await request(base + '/roles/' + recipient.id, owner, 'PATCH', { archived: true })).status).toBe(200);
+    const read = (await (await request(base + '/items/' + item.id, agent)).json() as any).data;
+    expect(read.recipient_roles).toEqual([{ id: recipient.id, name: 'Reviewer' }]);
+    expect((await request(base + '/items', agent, 'POST', { title: 'New', recipient_role_ids: [recipient.id] })).status).toBe(400);
+    expect((await request(base + '/items/' + item.id, agent, 'PATCH', { version: 1, content: 'Updated history' })).status).toBe(200);
+    const result = (await (await request(base + '/items?recipient_role_id=' + recipient.id, agent)).json() as any);
+    expect(result.data[0].recipient_role_ids).toEqual([recipient.id]); expect(result.data[0].version).toBe(2);
+    const other = await provision('private-recipient@test.com');
+    expect((await request(base + '/items/' + item.id, other)).status).toBe(404);
+    // ALL remains a message address and grants no access to another project.
+    const broadcast = (await (await request(base + '/items', agent, 'POST', { title: 'Private broadcast', recipient_role_ids: ['ALL'] })).json() as any).data;
+    expect((await request(base + '/items/' + broadcast.id, other)).status).toBe(404);
+  });
+});
+
+describe('existing database migration compatibility', () => {
+  it('preserves existing users, keys, project data, sender roles and attachments', async () => {
+    for (const [table, id] of Object.entries(migrationIds)) {
+      const row = (await env.DB.prepare(`SELECT * FROM ${table} WHERE id = ?`).bind(id).first<Record<string, unknown>>())!;
+      for (const [key, value] of Object.entries(migrationRows[table])) expect(row[key]).toEqual(value);
+      if (table === 'users') { expect(row.username).toBeNull(); expect(row.password_hash).toBeNull(); }
+      if (table === 'api_keys') expect(row.kind).toBe('api');
+      if (table === 'items') expect(JSON.parse(row.recipient_role_ids as string)).toEqual(['ALL']);
+    }
+    expect(await (await env.FILES.get('migration/legacy.txt'))!.text()).toBe('Legacy');
+    expect((await request('/api/v1/projects', 'legacy-migration-key')).status).toBe(200);
+  });
+});
+
+describe('updated-since polling', () => {
+  it('finds edits to older tasks, combines filters, normalizes timezone boundaries and includes deletion tombstones when requested', async () => {
+    const owner = await provision('updated-task@test.com'), project = await createProject(owner);
+    const role = await createRole(owner, project, 'Developer'), recipient = await createRole(owner, project, 'Reviewer');
+    const writer = (await projectKey(owner, project)).api_key, reader = (await projectKey(owner, project, 'read')).api_key;
+    const base = `/api/v1/projects/${project}/items`;
+    const created = (await (await request(base, writer, 'POST', { title: 'Watched task', kind: 'task', role_id: role.id, recipient_role_ids: [recipient.id], tags: ['watch'] })).json() as any).data;
+    await env.DB.prepare('UPDATE items SET created_at = ?, updated_at = ? WHERE id = ?').bind('2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z', created.id).run();
+    const edit = await request(base + '/' + created.id, writer, 'PATCH', { version: 1, status: 'in_progress', content: 'Task changed' });
+    expect(edit.status).toBe(200);
+    const edited = (await edit.json() as any).data;
+    expect((await (await request(base + '?from=2024-01-01T00:00:00Z', reader)).json() as any).data).toHaveLength(0);
+    const query = `updated_since=${encodeURIComponent(edited.updated_at)}&kind=task&role_id=${role.id}&recipient_role_id=${recipient.id}&tag=watch`;
+    const poll = await request(base + '?' + query, reader);
+    expect(poll.status).toBe(200);
+    const result = await poll.json() as any;
+    expect(result.data).toHaveLength(1); expect(result.data[0]).toMatchObject({ id: created.id, version: 2, status: 'in_progress' });
+    expect(Date.parse(result.sync_until)).toBeGreaterThanOrEqual(Date.parse(edited.updated_at));
+    const offsetBoundary = edited.updated_at.replace('Z', '+00:00');
+    expect((await (await request(base + '?updated_since=' + encodeURIComponent(offsetBoundary), reader)).json() as any).data[0].id).toBe(created.id);
+    expect((await (await request(base + '?' + query + '&from=2024-01-01T00:00:00Z', reader)).json() as any).data).toHaveLength(0);
+    expect((await request(base + '/' + created.id, writer, 'DELETE', { version: 2 })).status).toBe(204);
+    expect((await (await request(base + '?' + query, reader)).json() as any).data).toHaveLength(0);
+    const deleted = (await (await request(base + '?' + query + '&include_deleted=true', reader)).json() as any).data;
+    expect(deleted[0]).toMatchObject({ id: created.id, version: 3, deleted_at: expect.any(String) });
+    const other = await provision('updated-other@test.com');
+    expect((await request(base + '?' + query, other)).status).toBe(404);
+    for (const invalid of ['', '2024-01-01', '2024-01-01T00:00:00', 'invalid']) expect((await request(base + '?updated_since=' + encodeURIComponent(invalid), reader)).status).toBe(400);
+    expect((await (await request(base + '?include_deleted=true', reader)).json() as any).sync_until).toBeNull();
+  });
+
+  it('paginates tied update times in both directions and binds cursors to the updated-since window', async () => {
+    const owner = await provision('updated-pages@test.com'), project = await createProject(owner);
+    const writer = (await projectKey(owner, project)).api_key, base = `/api/v1/projects/${project}/items`;
+    const times = ['2024-01-02T00:00:00.000Z', '2024-01-02T00:00:00.000Z', '2024-01-03T00:00:00.000Z', '2024-01-04T00:00:00.000Z'];
+    const records = [];
+    for (let i = 0; i < times.length; i++) {
+      const item = (await (await request(base, writer, 'POST', { title: 'Task ' + i, kind: 'task' })).json() as any).data;
+      await env.DB.prepare('UPDATE items SET created_at = ?, updated_at = ? WHERE id = ?').bind('2020-01-01T00:00:00.000Z', times[i], item.id).run();
+      records.push({ id: item.id, updated_at: times[i] });
+    }
+    const sorted = [...records].sort((a, b) => a.updated_at.localeCompare(b.updated_at) || a.id.localeCompare(b.id));
+    const query = 'updated_since=2024-01-02T08:00:00%2B08:00&kind=task';
+    const first = await (await request(base + '?' + query + '&limit=1', writer)).json() as any;
+    expect(first.data[0].id).toBe(sorted[0].id); expect(first.total_count).toBe(4); expect(first.next_cursor).toBeTruthy();
+    const second = await (await request(base + '?' + query + '&limit=2&after=' + first.next_cursor, writer)).json() as any;
+    expect(second.data.map((i: any) => i.id)).toEqual(sorted.slice(1, 3).map((i) => i.id)); expect(second.sync_until).toBe(first.sync_until);
+    const third = await (await request(base + '?' + query + '&limit=2&after=' + second.next_cursor, writer)).json() as any;
+    expect(third.data.map((i: any) => i.id)).toEqual([sorted[3].id]); expect(third.next_cursor).toBeNull(); expect(third.sync_until).toBe(first.sync_until);
+    const latest = await (await request(base + '?' + query + '&order=updated_newest&limit=2&max_items=3', writer)).json() as any;
+    expect(latest.data.map((i: any) => i.id)).toEqual(sorted.slice(2).reverse().map((i) => i.id));
+    const last = await (await request(base + '?' + query + '&order=updated_newest&limit=2&max_items=3&after=' + latest.next_cursor, writer)).json() as any;
+    expect(last.data[0].id).toBe(sorted[1].id); expect(last.next_cursor).toBeNull(); expect(last.total_count).toBe(4);
+    expect((await request(base + '?updated_since=2024-01-01T00:00:00Z&kind=task&after=' + first.next_cursor, writer)).status).toBe(400);
+    expect((await request(base + '?' + query + '&order=updated_newest&after=' + first.next_cursor, writer)).status).toBe(400);
+    expect((await request(base + '?' + query + '&order=id&after=' + sorted[0].id, writer)).status).toBe(400);
+    const legacy = await (await request(base + '?order=id&limit=1', writer)).json() as any;
+    expect(legacy.next_cursor).toMatch(/^[a-f0-9-]{36}$/);
+    const updatedOrder = await (await request(base + '?order=updated_oldest&limit=1', writer)).json() as any;
+    expect(updatedOrder.data[0].id).toBe(sorted[0].id); expect(updatedOrder.sync_until).toBeTruthy();
+  });
+
+  it('defers tasks edited during pagination to the next polling window and returns a checkpoint even when empty', async () => {
+    const owner = await provision('updated-live@test.com'), project = await createProject(owner);
+    const writer = (await projectKey(owner, project)).api_key, base = `/api/v1/projects/${project}/items`;
+    const items = [];
+    for (let i = 0; i < 2; i++) {
+      const item = (await (await request(base, writer, 'POST', { title: 'Live task ' + i, kind: 'task' })).json() as any).data;
+      await env.DB.prepare('UPDATE items SET created_at = ?, updated_at = ? WHERE id = ?').bind('2020-01-01T00:00:00.000Z', `2024-01-0${i + 2}T00:00:00.000Z`, item.id).run();
+      items.push(item);
+    }
+    const query = 'updated_since=2024-01-01T00:00:00Z&kind=task&limit=1';
+    const first = await (await request(base + '?' + query, writer)).json() as any;
+    expect(first.data[0].id).toBe(items[0].id);
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    const edited = (await (await request(base + '/' + items[1].id, writer, 'PATCH', { version: 1, content: 'Changed while paging' })).json() as any).data;
+    expect(Date.parse(edited.updated_at)).toBeGreaterThan(Date.parse(first.sync_until));
+    const rest = await (await request(base + '?' + query + '&after=' + first.next_cursor, writer)).json() as any;
+    expect(rest.data).toHaveLength(0); expect(rest.next_cursor).toBeNull(); expect(rest.sync_until).toBe(first.sync_until);
+    const next = await (await request(base + '?kind=task&updated_since=' + encodeURIComponent(first.sync_until), writer)).json() as any;
+    expect(next.data.map((i: any) => i.id)).toEqual([items[1].id]); expect(next.data[0].version).toBe(2);
+    const empty = await (await request(base + '?updated_since=2099-01-01T00:00:00Z', writer)).json() as any;
+    expect(empty.data).toHaveLength(0); expect(empty.sync_until).toBeTruthy();
   });
 });

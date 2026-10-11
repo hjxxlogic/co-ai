@@ -670,7 +670,7 @@
     "/api/v1/projects/{projectId}/items": {
       "get": {
         "operationId": "get_api_v1_projects_projectId_items",
-        "summary": "Search project items by role, TAGs, creation time and total cap",
+        "summary": "Search project items by sender/recipient, TAGs, creation or update time and total cap",
         "responses": {
           "200": {
             "description": "Success",
@@ -702,13 +702,22 @@
                       ],
                       "minimum": 1,
                       "maximum": 1000
+                    },
+                    "sync_until": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "date-time",
+                      "description": "Inclusive upper bound fixed across all pages of update-based queries; null otherwise. Advance the polling checkpoint only after reading the full window without max_items. Concurrent edits beyond this bound appear in the next poll; latest-state results are not an event history."
                     }
                   },
                   "required": [
                     "data",
                     "next_cursor",
                     "total_count",
-                    "max_items"
+                    "max_items",
+                    "sync_until"
                   ]
                 }
               }
@@ -782,7 +791,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Project role UUID, or none for unassigned items."
+            "description": "Filter by sender role ID, or none for an unassigned sender."
           },
           {
             "name": "tag",
@@ -873,10 +882,38 @@
               "enum": [
                 "id",
                 "newest",
-                "oldest"
+                "oldest",
+                "updated_newest",
+                "updated_oldest"
               ]
             },
-            "description": "Default newest with max_items, otherwise id. Chronological ties use ID."
+            "description": "newest/oldest sort creation time; updated_newest/updated_oldest sort update time. Default updated_oldest with updated_since, otherwise newest with max_items, otherwise id. Timestamp ties use ID."
+          },
+          {
+            "name": "recipient_role_id",
+            "in": "query",
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "string",
+                  "const": "ALL"
+                }
+              ]
+            },
+            "description": "Filter messages addressed to this role, including ALL broadcasts. ALL returns only broadcasts. Combines with other filters."
+          },
+          {
+            "name": "updated_since",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "Inclusive updated_at lower bound; timezone required. Finds edits to older items. Defaults to updated_oldest ordering. Poll all pages without max_items, then reuse sync_until as the next inclusive boundary and deduplicate by item ID/version. Include deleted items to observe tombstones."
           }
         ]
       },
@@ -1414,7 +1451,7 @@
     "/api/admin/users/{userId}/reset-key": {
       "post": {
         "operationId": "post_api_admin_users_userId_reset_key",
-        "summary": "Administrator: revoke all keys and sessions, return a new user key",
+        "summary": "Reset user management keys; preserve password login, project keys and project data",
         "responses": {
           "201": {
             "description": "Success",
@@ -1727,7 +1764,7 @@
               "null"
             ],
             "format": "uuid",
-            "description": "Active role in this project; null clears assignment."
+            "description": "Sender role ID in this project; null means unassigned. New assignments require an active role."
           },
           "tags": {
             "type": "array",
@@ -1738,6 +1775,27 @@
               "maxLength": 50
             },
             "description": "Trimmed, NFC normalized, lowercased and deduplicated; no control characters."
+          },
+          "recipient_role_ids": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 20,
+            "items": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "string",
+                  "const": "ALL"
+                }
+              ]
+            },
+            "description": "Recipient role IDs in this project, deduplicated; ALL addresses every role. Defaults to [\"ALL\"]. New assignments require active roles. Addressing does not change access permissions.",
+            "default": [
+              "ALL"
+            ]
           }
         },
         "required": [
@@ -1785,7 +1843,7 @@
               "null"
             ],
             "format": "uuid",
-            "description": "Active role in this project; null clears assignment."
+            "description": "Sender role ID in this project; null means unassigned. New assignments require an active role."
           },
           "tags": {
             "type": "array",
@@ -1796,6 +1854,24 @@
               "maxLength": 50
             },
             "description": "Trimmed, NFC normalized, lowercased and deduplicated; no control characters."
+          },
+          "recipient_role_ids": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 20,
+            "items": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "string",
+                  "const": "ALL"
+                }
+              ]
+            },
+            "description": "Recipient role IDs in this project, deduplicated; ALL addresses every role. Defaults to [\"ALL\"]. New assignments require active roles. Addressing does not change access permissions."
           }
         },
         "required": [
@@ -1911,13 +1987,34 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 200
+          },
+          "username": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 64,
+            "pattern": "^[a-zA-Z0-9_.-]+$",
+            "description": "Unique case-insensitive username, trimmed and lowercased."
+          },
+          "password": {
+            "type": "string",
+            "minLength": 12,
+            "maxLength": 256,
+            "writeOnly": true
           }
         },
         "required": [
           "email",
           "name"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "dependentRequired": {
+          "username": [
+            "password"
+          ],
+          "password": [
+            "username"
+          ]
+        }
       },
       "Item": {
         "type": "object",
@@ -1986,7 +2083,7 @@
               "null"
             ],
             "format": "uuid",
-            "description": "Active role in this project; null clears assignment."
+            "description": "Sender role ID in this project; null means unassigned. New assignments require an active role."
           },
           "tags": {
             "type": "array",
@@ -2004,6 +2101,47 @@
               "null"
             ],
             "readOnly": true
+          },
+          "recipient_role_ids": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 20,
+            "items": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "string",
+                  "const": "ALL"
+                }
+              ]
+            },
+            "description": "Recipient role IDs in this project, deduplicated; ALL addresses every role. Defaults to [\"ALL\"]. New assignments require active roles. Addressing does not change access permissions."
+          },
+          "recipient_roles": {
+            "type": "array",
+            "readOnly": true,
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "name"
+              ]
+            },
+            "description": "Recipient IDs and current names, including archived roles and the special ALL address."
           }
         }
       },
@@ -2151,6 +2289,13 @@
               "null"
             ],
             "format": "date-time"
+          },
+          "username": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Case-insensitive login username; null until configured."
           }
         }
       },
@@ -2233,6 +2378,19 @@
           },
           "disabled": {
             "type": "boolean"
+          },
+          "username": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 64,
+            "pattern": "^[a-zA-Z0-9_.-]+$",
+            "description": "Unique case-insensitive username, trimmed and lowercased."
+          },
+          "password": {
+            "type": "string",
+            "minLength": 12,
+            "maxLength": 256,
+            "writeOnly": true
           }
         },
         "additionalProperties": false,

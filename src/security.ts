@@ -29,3 +29,12 @@ export function ownerOnly(c: Context<AppEnv>) {
 export function writable(c: Context<AppEnv>) {
   if (c.get('principal').permission !== 'write') throw new HTTPException(403, { message: 'Read-only API key' });
 }
+
+export async function resetUserKey(env: Env, userId: string) {
+  const key = await newKey(env, userId, null, 'Reset user key', 'write');
+  await env.DB.batch([
+    env.DB.prepare("UPDATE api_keys SET revoked_at = ? WHERE user_id = ? AND project_id IS NULL AND kind = 'api' AND revoked_at IS NULL").bind(new Date().toISOString(), userId),
+    env.DB.prepare("DELETE FROM web_sessions WHERE key_id IN (SELECT id FROM api_keys WHERE user_id = ? AND project_id IS NULL AND kind = 'api')").bind(userId), key.statement,
+  ]);
+  return key.data;
+}

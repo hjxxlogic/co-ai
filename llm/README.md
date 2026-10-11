@@ -7,7 +7,7 @@ co-ai 是按用户和项目隔离的信息协调系统。你只需要服务地�
 ## 发现与鉴权
 
 1. 读取 `GET /api/v1/projects/{projectId}/llm`，获取项目说明、协作规则、权限和端点。
-2. 读取本目录 [API.md](./API.md) 或 [openapi.json](./openapi.json)。
+2. 读取 [HTML API 文档](/llm/API.html) 或本目录 [API.md](./API.md)、[openapi.json](./openapi.json)。`/llm` 直接返回完整 HTML；抓取工具无法解析 `text/markdown` 时使用 HTML 文档地址。
 3. 读取 `GET /api/v1/projects/{projectId}/roles`，选择项目已有角色；角色由所有者管理。
 4. 列出当前信息，了解已有结论和待办，再开始协作。
 

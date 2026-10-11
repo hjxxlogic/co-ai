@@ -68,7 +68,7 @@ beforeAll(async () => {
     env: { DB: { type: 'd1', id: 'test-db' }, FILES: { type: 'r2', name: 'test-files' } },
   } }] });
   const bindings = await mf.getBindings();
-  env = { ...bindings, ADMIN_TOKEN: admin, DOCS: { fetch: async () => new Response('API docs') } } as unknown as Env;
+  env = { ...bindings, ADMIN_TOKEN: admin, DOCS: { fetch: async (req: Request) => new Response(new URL(req.url).pathname.endsWith('.html') ? '<!doctype html><h1>AI docs</h1><a href="/llm/API.html">API</a>' : 'API docs', { headers: { 'Content-Type': new URL(req.url).pathname.endsWith('.html') ? 'text/html; charset=utf-8' : 'text/plain; charset=utf-8' } }) } } as unknown as Env;
   // D1 exec expects each statement on one line.
   for (const file of ['0001_initial.sql', '0002_web_management.sql', '0003_roles_and_tags.sql', '0004_password_login.sql', '0005_recipient_roles.sql']) {
     if (file === '0004_password_login.sql') {
@@ -292,7 +292,14 @@ describe('multi-user project API with D1 and R2', () => {
     const changed = await request(`/api/v1/projects/${id}`, owner, 'PATCH', { name: 'Renamed' });
     expect(changed.status).toBe(200);
     expect((await changed.json() as any).data.instructions).toBe('Record decisions and next steps.');
-    expect((await request('/llm')).status).toBe(302);
+    for (const path of ['/llm', '/llm/', '/llm/API.html']) {
+      const page = await request(path);
+      expect(page.status).toBe(200);
+      expect(page.headers.get('Location')).toBeNull();
+      expect(page.headers.get('Content-Type')).toBe('text/html; charset=utf-8');
+      expect(page.headers.get('Content-Security-Policy')).toContain("script-src 'none'");
+      expect(await page.text()).toContain('<h1>AI docs</h1>');
+    }
     const docs = await request('/llm/README.md');
     expect(docs.headers.get('Content-Type')).toBe('text/markdown; charset=utf-8');
     expect(await docs.text()).toBe('API docs');

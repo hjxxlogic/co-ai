@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 import type { AppEnv, Principal } from './types';
@@ -28,6 +28,9 @@ app.use('*', async (c, next) => {
   if (c.req.path === '/') {
     c.header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
   }
+  if (c.req.path === '/llm' || c.req.path.startsWith('/llm/')) {
+    c.header('Content-Security-Policy', "default-src 'self'; script-src 'none'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
+  }
   c.header('Referrer-Policy', 'same-origin');
   c.header('Strict-Transport-Security', 'max-age=31536000');
   c.header('X-Content-Type-Options', 'nosniff');
@@ -43,11 +46,17 @@ app.notFound((c) => c.json({ error: { code: 404, message: 'Not found' } }, 404))
 app.use('/api/*', csrfGuard);
 app.get('/health', (c) => c.json({ status: 'ok' }));
 app.get('/', async (c) => {
-  return c.env.DOCS.fetch(c.req.raw);
+  return c.env.DOCS.fetch(new Request(new URL('/index.html', c.req.url), c.req.raw));
 });
 app.get('/app.js', (c) => c.env.DOCS.fetch(c.req.raw));
 app.get('/styles.css', (c) => c.env.DOCS.fetch(c.req.raw));
-app.get('/llm', (c) => c.redirect('/llm/README.md'));
+const docsIndex = (c: Context<AppEnv>) => {
+  const url = new URL(c.req.url);
+  url.pathname = '/llm/index.html';
+  return c.env.DOCS.fetch(new Request(url, c.req.raw));
+};
+app.get('/llm', docsIndex);
+app.get('/llm/', docsIndex);
 app.get('/llm/*', async (c) => {
   const response = await c.env.DOCS.fetch(c.req.raw);
   if (!response.ok || !c.req.path.endsWith('.md')) return response;

@@ -300,9 +300,13 @@ describe('multi-user project API with D1 and R2', () => {
       expect(page.headers.get('Content-Security-Policy')).toContain("script-src 'none'");
       expect(await page.text()).toContain('<h1>AI docs</h1>');
     }
-    const docs = await request('/llm/README.md');
-    expect(docs.headers.get('Content-Type')).toBe('text/markdown; charset=utf-8');
-    expect(await docs.text()).toBe('API docs');
+    for (const path of ['/llm/README.md', '/llm/API.md']) {
+      const docs = await request(path);
+      expect(docs.status).toBe(200);
+      expect(docs.headers.get('Content-Type')).toBe('text/plain; charset=utf-8');
+      expect(await docs.text()).toBe('API docs');
+    }
+    expect(doc.data.documentation).toBe('https://co-ai.test/llm');
   });
 });
 

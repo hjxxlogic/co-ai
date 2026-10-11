@@ -4,7 +4,7 @@
 
 当前仓库提供 Web 管理界面、REST API、数据库迁移、自动化集成测试和 AI 文档。用户由管理员创建，目前不支持公开注册或跨用户共享项目。
 
-生产服务：<https://co-ai.xlogic.cc>，AI 文档：<https://co-ai.xlogic.cc/llm>（直接返回完整 HTML，兼容浏览器和 AI 抓取工具），API 文档：<https://co-ai.xlogic.cc/llm/API.html>。管理员密钥配置在 Cloudflare Worker secret 中，本地副本保存在忽略提交的 `.dev.vars`，不要公开或提交该文件。
+生产服务：<https://co-ai.xlogic.cc>，AI 文档：<https://co-ai.xlogic.cc/llm>（`/llm` 与 `/llm/` 均直接返回同一份完整 HTML，统一推荐 `/llm`），API 文档：<https://co-ai.xlogic.cc/llm/API.html>。管理员密钥配置在 Cloudflare Worker secret 中，本地副本保存在忽略提交的 `.dev.vars`，不要公开或提交该文件。
 
 ## Web 工作台
 
@@ -43,7 +43,7 @@ npm run db:migrate:local
 npm run dev
 ```
 
-Wrangler 本地模拟 D1 和 R2，不需要先创建云端资源。默认地址为 `https://localhost:8787`，本地开发使用自签证书，需要在浏览器中信任该本地证书。本地数据在 `.wrangler/` 中，真实密钥文件已加入 `.gitignore`。`predev` / `prebuild` / `predeploy` 会自动把 `llm/` 文档同步到静态资源目录，并生成无需 JavaScript 的 HTML 操作指南和 API 文档；原 `.md` 地址和 `openapi.json` 保留。
+Wrangler 本地模拟 D1 和 R2，不需要先创建云端资源。默认地址为 `https://localhost:8787`，本地开发使用自签证书，需要在浏览器中信任该本地证书。本地数据在 `.wrangler/` 中，真实密钥文件已加入 `.gitignore`。`predev` / `prebuild` / `predeploy` 会自动把 `llm/` 文档同步到静态资源目录，并生成无需 JavaScript 的 HTML 操作指南和 API 文档；原 `.md` 地址保留 Markdown 正文并以 `text/plain; charset=utf-8` 返回，方便 AI 客户端直接读取；`openapi.json` 保留。
 
 ## 创建用户和项目
 

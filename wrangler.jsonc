@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "co-ai",
+  "account_id": "6081c65734701e00a8ef4554443e2688",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [{ "pattern": "co-ai.xlogic.cc", "custom_domain": true }],
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-11",
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "co-ai",
+    "database_id": "0a23f076-441c-4fd3-aaa4-e28250c91297",
+    "migrations_dir": "migrations"
+  }],
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "co-ai-files" }],
+  "assets": { "directory": "./public", "binding": "DOCS", "run_worker_first": true },
+  "observability": { "enabled": true }
+}

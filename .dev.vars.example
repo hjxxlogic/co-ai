@@ -1,0 +1,2 @@
+# Copy to .dev.vars and replace with a randomly generated value (at least 32 characters).
+ADMIN_TOKEN=replace-with-a-random-secret-at-least-32-characters

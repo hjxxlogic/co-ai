@@ -31,6 +31,34 @@ async function projectKey(key: string, id: string, permission = 'write') {
   return (await res.json() as any).data;
 }
 
+async function createRole(key: string, id: string, name: string) {
+  const res = await request(`/api/v1/projects/${id}/roles`, key, 'POST', { name, description: 'Project responsibility' });
+  expect(res.status).toBe(201);
+  return (await res.json() as any).data;
+}
+async function searchFixture(email: string) {
+  const owner = await provision(email), project = await createProject(owner);
+  const role = await createRole(owner, project, '开发');
+  const writer = (await projectKey(owner, project)).api_key;
+  const base = `/api/v1/projects/${project}/items`;
+  const inputs = [
+    { title: 'Older', kind: 'message', role_id: role.id, tags: ['API', 'urgent'] },
+    { title: 'Middle B', kind: 'message', role_id: role.id, tags: ['api'] },
+    { title: 'Middle A', kind: 'message', role_id: null, tags: ['urgent'] },
+    { title: 'Latest note', kind: 'note', role_id: role.id, tags: ['api-v2'] },
+  ];
+  const times = ['2024-01-01T00:00:00.000Z', '2024-01-02T00:00:00.000Z', '2024-01-02T00:00:00.000Z', '2024-01-03T00:00:00.000Z'];
+  const records = [];
+  for (let i = 0; i < inputs.length; i++) {
+    const res = await request(base, writer, 'POST', inputs[i]);
+    expect(res.status).toBe(201);
+    const item = (await res.json() as any).data;
+    await env.DB.prepare('UPDATE items SET created_at = ? WHERE id = ?').bind(times[i], item.id).run();
+    records.push({ ...item, created_at: times[i] });
+  }
+  return { owner, project, role, writer, base, records };
+}
+
 beforeAll(async () => {
   mf = new Miniflare({ workers: [{ config: {
     name: 'co-ai-test', compatibilityDate: '2026-10-11',
@@ -40,7 +68,7 @@ beforeAll(async () => {
   const bindings = await mf.getBindings();
   env = { ...bindings, ADMIN_TOKEN: admin, DOCS: { fetch: async () => new Response('API docs') } } as unknown as Env;
   // D1 exec expects each statement on one line.
-  for (const file of ['0001_initial.sql', '0002_web_management.sql']) {
+  for (const file of ['0001_initial.sql', '0002_web_management.sql', '0003_roles_and_tags.sql']) {
     const sql = await readFile(new URL('../migrations/' + file, import.meta.url), 'utf8');
     await env.DB.exec(sql.split(';').map((s) => s.replace(/\s+/g, ' ').trim()).filter(Boolean).join(';\n') + ';');
   }
@@ -252,5 +280,83 @@ describe('multi-user project API with D1 and R2', () => {
     const docs = await request('/llm/README.md');
     expect(docs.headers.get('Content-Type')).toBe('text/markdown; charset=utf-8');
     expect(await docs.text()).toBe('API docs');
+  });
+});
+
+describe('project roles, message TAGs and search windows', () => {
+  it('isolates role management and preserves historical role attribution on archive', async () => {
+    const owner = await provision('role-owner@test.com'), stranger = await provision('role-stranger@test.com');
+    const id = await createProject(owner), other = await createProject(owner);
+    const role = await createRole(owner, id, 'Developer');
+    expect((await request(`/api/v1/projects/${id}/roles`, owner, 'POST', { name: 'developer' })).status).toBe(409);
+    const writer = (await projectKey(owner, id)).api_key, reader = (await projectKey(owner, id, 'read')).api_key;
+    expect((await request(`/api/v1/projects/${id}/roles`, reader)).status).toBe(200);
+    expect((await request(`/api/v1/projects/${id}/roles`, writer, 'POST', { name: 'Intrusion' })).status).toBe(403);
+    expect((await request(`/api/v1/projects/${id}/roles`, stranger)).status).toBe(404);
+    expect((await request(`/api/v1/projects/${other}/roles/${role.id}`, owner, 'PATCH', { name: 'Cross project' })).status).toBe(404);
+    expect((await request(`/api/v1/projects/${other}/items`, owner, 'POST', { title: 'Cross project role', role_id: role.id })).status).toBe(400);
+    const res = await request(`/api/v1/projects/${id}/items`, writer, 'POST', { title: 'Role message', kind: 'message', role_id: role.id, tags: [' API ', 'api', 'Urgent'] });
+    expect(res.status).toBe(201);
+    const item = (await res.json() as any).data;
+    expect(item).toMatchObject({ role_id: role.id, role_name: 'Developer', tags: ['api', 'urgent'] });
+    expect((await request(`/api/v1/projects/${id}/roles/${role.id}`, owner, 'PATCH', { archived: true })).status).toBe(200);
+    expect((await request(`/api/v1/projects/${id}/items`, writer, 'POST', { title: 'Archived role', role_id: role.id })).status).toBe(400);
+    const updated = await request(`/api/v1/projects/${id}/items/${item.id}`, writer, 'PATCH', { version: 1, content: 'Keep role and TAGs' });
+    expect(updated.status).toBe(200);
+    expect((await updated.json() as any).data).toMatchObject({ role_id: role.id, tags: ['api', 'urgent'] });
+    const cleared = await request(`/api/v1/projects/${id}/items/${item.id}`, writer, 'PATCH', { version: 2, role_id: null, tags: [] });
+    expect(cleared.status).toBe(200);
+    expect((await cleared.json() as any).data).toMatchObject({ role_id: null, role_name: null, tags: [] });
+    expect((await (await request(`/api/v1/projects/${id}/roles`, reader)).json() as any).data).toHaveLength(0);
+    expect((await (await request(`/api/v1/projects/${id}/roles?include_archived=true`, reader)).json() as any).data).toHaveLength(1);
+    expect((await request(`/api/v1/projects/${id}/roles/${role.id}`, owner, 'PATCH', { archived: false, name: '工程师' })).status).toBe(200);
+  });
+
+  it('combines exact roles/TAGs, any/all TAG matching, kind and inclusive timezone-aware ranges', async () => {
+    const { writer, base, role, records } = await searchFixture('search-filters@test.com');
+    const query = async (params: string) => (await (await request(base + '?' + params, writer)).json() as any);
+    expect((await query(`role_id=${role.id}&tag=API`)).data.map((i: any) => i.id).sort()).toEqual([records[0].id, records[1].id].sort());
+    expect((await query('tag=api')).total_count).toBe(2); // api-v2 must not match api.
+    expect((await query('tag=api&tag=urgent')).data.map((i: any) => i.id)).toEqual([records[0].id]);
+    expect((await query('tag=api&tag=urgent&tag_mode=any')).total_count).toBe(3);
+    expect((await query('role_id=none')).data.map((i: any) => i.id)).toEqual([records[2].id]);
+    const boundary = encodeURIComponent('2024-01-02T08:00:00+08:00');
+    expect((await query(`from=${boundary}&to=${boundary}&kind=message`)).data.map((i: any) => i.id).sort()).toEqual([records[1].id, records[2].id].sort());
+    expect((await query(`role_id=${role.id}&tag=api&from=${boundary}&q=Middle&kind=message`)).data.map((i: any) => i.id)).toEqual([records[1].id]);
+    expect((await query('q=%25')).data).toHaveLength(0); // '%' is literal text, not a SQL wildcard.
+    expect((await query('tag=' + encodeURIComponent("x' OR 1=1--"))).data).toHaveLength(0);
+  });
+
+  it('caps total results across chronological pages and safely breaks timestamp ties', async () => {
+    const { writer, base, records } = await searchFixture('search-pages@test.com');
+    const sorted = [...records].sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id));
+    const first = await (await request(base + '?max_items=3&limit=2', writer)).json() as any;
+    expect(first.total_count).toBe(4); expect(first.data.map((v: any) => v.id)).toEqual(sorted.slice(0, 2).map(v => v.id));
+    expect(first.next_cursor).toBeTruthy();
+    const second = await (await request(base + '?max_items=3&limit=2&after=' + first.next_cursor, writer)).json() as any;
+    expect(second.data.map((v: any) => v.id)).toEqual([sorted[2].id]); expect(second.next_cursor).toBeNull();
+    expect((await request(base + '?max_items=3&limit=2&tag=api&after=' + first.next_cursor, writer)).status).toBe(400);
+    const oldest = await (await request(base + '?order=oldest&limit=1', writer)).json() as any;
+    expect(oldest.data[0].id).toBe(records[0].id);
+    const next = await (await request(base + '?order=oldest&limit=1&after=' + oldest.next_cursor, writer)).json() as any;
+    expect(next.data[0].id).toBe(sorted[2].id);
+    const single = await (await request(base + '?max_items=1', writer)).json() as any;
+    expect(single.data.map((v: any) => v.id)).toEqual([records[3].id]); expect(single.next_cursor).toBeNull();
+  });
+
+  it('rejects malformed search parameters and leaves role/TAG metadata untouched on stale updates', async () => {
+    const { writer, base, role, records } = await searchFixture('search-invalid@test.com');
+    for (const query of ['from=2024-01-01', 'to=not-a-time', 'from=2024-01-03T00:00:00Z&to=2024-01-01T00:00:00Z', 'max_items=0', 'max_items=1001', 'tag=', 'tag_mode=unknown', 'order=unknown', 'role_id=invalid', 'after=broken&order=newest']) {
+      expect((await request(base + '?' + query, writer)).status, query).toBe(400);
+    }
+    expect((await request(base, writer, 'POST', { title: 'Invalid tags', tags: Array.from({ length: 21 }, (_, i) => 'tag' + i) })).status).toBe(400);
+    expect((await request(base, writer, 'POST', { title: 'Empty tags', tags: [' '] })).status).toBe(400);
+    const item = records[0];
+    expect((await request(`${base}/${item.id}`, writer, 'PATCH', { version: 1, content: 'Updated' })).status).toBe(200);
+    expect((await request(`${base}/${item.id}`, writer, 'PATCH', { version: 1, role_id: null, tags: [] })).status).toBe(409);
+    expect((await (await request(`${base}/${item.id}`, writer)).json() as any).data).toMatchObject({ role_id: role.id, tags: ['api', 'urgent'] });
+    expect((await request(`${base}/${item.id}`, writer, 'DELETE', { version: 2 })).status).toBe(204);
+    const deleted = await (await request(base + '?include_deleted=true&tag=urgent', writer)).json() as any;
+    expect(deleted.data.find((i: any) => i.id === item.id).deleted_at).toBeTruthy();
   });
 });

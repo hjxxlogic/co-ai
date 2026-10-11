@@ -1,7 +1,8 @@
 const root = document.querySelector('#app');
 const dialog = document.querySelector('#dialog');
 const toastBox = document.querySelector('#toast');
-const state = { session: null, users: [], projects: [], project: null, items: [], keys: [], files: [], tab: 'overview', query: '' };
+const emptyFilters = () => ({ role_id: '', tags: '', tag_mode: 'all', kind: '', q: '', from: '', to: '', max_items: '' });
+const state = { session: null, users: [], projects: [], project: null, items: [], roles: [], keys: [], files: [], tab: 'overview', query: '', filters: emptyFilters(), itemsTotal: 0, itemsCursor: null };
 const kinds = { note: '笔记', task: '任务', decision: '决策', message: '消息' };
 const statuses = { open: '待处理', in_progress: '进行中', done: '已完成', archived: '已归档' };
 const e = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -42,12 +43,36 @@ async function loadHome() {
   state.project = null; render();
 }
 async function loadProject(id, tab = 'overview') {
+  if (state.project?.id !== id) { state.filters = emptyFilters(); state.roles = []; }
   state.project = (await api('/api/v1/projects/' + encodeURIComponent(id))).data;
   state.tab = tab;
-  if (tab === 'items') state.items = await all(base() + '/items');
+  if (tab === 'items' || tab === 'roles') state.roles = await all(base() + '/roles?include_archived=true');
+  if (tab === 'items') await loadItems();
   if (tab === 'keys') state.keys = (await api('/api/v1/keys')).data.filter((k) => k.project_id === id);
   if (tab === 'files') state.files = await all(base() + '/attachments');
   render();
+}
+const splitTags = (value) => value.split(/\r?\n/).map((tag) => tag.trim()).filter(Boolean);
+function itemQuery() {
+  const filters = state.filters;
+  const query = new URLSearchParams({ order: 'newest', limit: '50' });
+  for (const key of ['role_id', 'kind', 'q', 'max_items']) if (filters[key]) query.set(key, filters[key]);
+  for (const key of ['from', 'to']) if (filters[key]) query.set(key, new Date(filters[key]).toISOString());
+  for (const tag of splitTags(filters.tags)) query.append('tag', tag);
+  query.set('tag_mode', filters.tag_mode);
+  return query;
+}
+async function loadItems(append = false) {
+  const query = itemQuery();
+  if (append && state.itemsCursor) query.set('after', state.itemsCursor);
+  const page = await api(base() + '/items?' + query);
+  state.items = append ? [...state.items, ...page.data] : page.data;
+  state.itemsTotal = page.total_count;
+  state.itemsCursor = page.next_cursor;
+}
+function roleOptions(selected = '', filter = false) {
+  const rows = filter ? state.roles : state.roles.filter((role) => !role.archived_at || role.id === selected);
+  return `<option value="">${filter ? '全部角色' : '不标记角色'}</option>${filter ? `<option value="none" ${selected === 'none' ? 'selected' : ''}>未标记角色</option>` : ''}${rows.map((role) => `<option value="${e(role.id)}" ${role.id === selected ? 'selected' : ''}>${e(role.name)}${role.archived_at ? '（已归档）' : ''}</option>`).join('')}`;
 }
 function loginView() {
   return `<main class="login"><section class="intro"><div class="brand">co<span>·</span>ai</div><div class="eyebrow">Shared context. Clear next steps.</div><h1>让每一次协作，<br>都有共同的上下文。</h1><p>把背景、任务和决策放进同一个项目。让人与 AI 在清晰的边界内，一起推进工作。</p><div class="intro-footer">项目独立 · 信息共享 · 权限可控</div></section><section class="login-pane"><form id="login-form" class="login-card"><div class="eyebrow">欢迎回来</div><h2>登录协作工作台</h2><p class="muted">选择你的身份，使用专属凭据进入。</p><div class="role-switch"><label><input type="radio" name="role" value="user" checked>用户</label><label><input type="radio" name="role" value="admin">管理员</label></div><label class="field" for="credential">登录凭据</label><input id="credential" name="credential" type="password" required autocomplete="off" maxlength="256" placeholder="用户 Key 或管理员令牌"><p class="hint">用户 Key 由管理员提供；管理员使用管理员令牌。项目 AI Key 仅供 API 调用。</p><button class="primary" type="submit">进入工作台 →</button><p class="hint">仅支持 HTTPS。登录凭据不会保存在浏览器存储中。</p><a href="/llm" target="_blank" rel="noopener">查看 AI API 文档 ↗</a></form></section></main>`;
@@ -68,14 +93,30 @@ function projectsView() {
 }
 function projectView() {
   const p = state.project;
-  return `<button class="back" data-action="home">← 返回我的项目</button><div class="heading"><div><div class="eyebrow">Project workspace</div><h1>${e(p.name)}</h1><p>${e(p.description.slice(0, 160) || '项目协作空间')}</p></div><div class="actions"><button data-action="edit-project">编辑项目</button><button class="${p.archived_at ? '' : 'danger'}" data-action="archive-project">${p.archived_at ? '恢复项目' : '归档项目'}</button></div></div>${p.archived_at ? '<div class="archived-note">项目已归档，项目 AI Key 暂时无法访问。恢复项目后可继续协作；现有信息与附件会保留。</div>' : ''}<div class="tabs" role="tablist">${Object.entries({ overview: '项目概览', items: '信息列表', keys: 'AI Key', files: '附件' }).map(([id, label]) => `<button role="tab" aria-selected="${state.tab === id}" class="${state.tab === id ? 'active' : ''}" data-action="tab" data-tab="${id}">${label}</button>`).join('')}</div>${state.tab === 'overview' ? overviewView() : state.tab === 'items' ? itemsView() : state.tab === 'keys' ? keysView() : filesView()}`;
+  return `<button class="back" data-action="home">← 返回我的项目</button><div class="heading"><div><div class="eyebrow">Project workspace</div><h1>${e(p.name)}</h1><p>${e(p.description.slice(0, 160) || '项目协作空间')}</p></div><div class="actions"><button data-action="edit-project">编辑项目</button><button class="${p.archived_at ? '' : 'danger'}" data-action="archive-project">${p.archived_at ? '恢复项目' : '归档项目'}</button></div></div>${p.archived_at ? '<div class="archived-note">项目已归档，项目 AI Key 暂时无法访问。恢复项目后可继续协作；现有信息与附件会保留。</div>' : ''}<div class="tabs" role="tablist">${Object.entries({ overview: '项目概览', roles: '角色', items: '信息列表', keys: 'AI Key', files: '附件' }).map(([id, label]) => `<button role="tab" aria-selected="${state.tab === id}" class="${state.tab === id ? 'active' : ''}" data-action="tab" data-tab="${id}">${label}</button>`).join('')}</div>${state.tab === 'overview' ? overviewView() : state.tab === 'roles' ? rolesView() : state.tab === 'items' ? itemsView() : state.tab === 'keys' ? keysView() : filesView()}`;
 }
 function overviewView() {
   const p = state.project;
   return `<div class="detail-grid"><section class="card"><h2>AI 协作规则</h2><div class="prose">${e(p.instructions || '尚未设置规则。编辑项目，告诉 AI 项目目标、约束和协作方式。')}</div></section><section class="card"><h2>连接你的 AI</h2><p class="hint">为每位 AI 创建项目专用 Key，再提供以下项目入口。Key 仅可访问此项目。</p><div class="inset mono">${e(location.origin + base() + '/llm')}</div><p class="hint">请求头：Authorization: Bearer &lt;API_KEY&gt;</p><button data-action="tab" data-tab="keys">管理 AI Key →</button><p class="hint">项目 ID</p><div class="mono">${e(p.id)}</div></section><section class="card"><h2>项目介绍</h2><div class="prose">${e(p.description || '尚未填写介绍。')}</div></section><section class="card"><h2>协作方式</h2><div class="prose">笔记保存背景，任务记录下一步，决策保存结论，消息传递协作进展。\n信息更新带版本校验，多位协作者同时编辑时不会静默覆盖。</div></section></div>`;
 }
+function rolesView() {
+  return `<div class="heading"><p>定义本项目的协作角色，让 AI 发布消息时标记自己的角色。</p><button class="primary" data-action="create-role">＋ 添加角色</button></div>${state.roles.length ? `<div class="grid">${state.roles.map((role) => `<article class="card project-card"><div><span class="badge ${role.archived_at ? 'off' : ''}">${role.archived_at ? '已归档' : '可用'}</span></div><h2>${e(role.name)}</h2><p>${e(role.description || '尚未填写角色职责')}</p><div class="mono">${e(role.id)}</div><div class="card-bottom"><button class="small" data-action="edit-role" data-id="${e(role.id)}">编辑</button><button class="small ${role.archived_at ? '' : 'danger'}" data-action="archive-role" data-id="${e(role.id)}">${role.archived_at ? '恢复' : '归档'}</button></div></article>`).join('')}</div>` : empty('定义项目中的角色', '例如产品经理、开发、测试。AI 可读取角色列表，给消息标记角色。')}`;
+}
 function itemsView() {
-  return `<div class="heading"><p>${state.items.length} 条项目信息</p><div class="actions"><button data-action="refresh">刷新</button><button class="primary" data-action="create-item">＋ 添加信息</button></div></div>${state.items.length ? `<div class="item-list">${state.items.map((item) => `<article class="card"><div class="item-head"><div><h2>${e(item.title)}</h2><div class="item-tags"><span class="badge off">${kinds[item.kind]}</span><span class="badge">${statuses[item.status]}</span></div></div><div class="actions"><button class="small" data-action="edit-item" data-id="${e(item.id)}">编辑</button><button class="small danger" data-action="delete-item" data-id="${e(item.id)}">删除</button></div></div><div class="item-content">${e(item.content)}</div><div class="item-footer">更新于 ${date(item.updated_at)} · 版本 ${item.version}</div></article>`).join('')}</div>` : empty('还没有信息', '添加一条笔记或任务，也可以让 AI 通过 API 写入。')}`;
+  const f = state.filters;
+  return `<div class="heading"><p>匹配 ${state.itemsTotal} 条 · 已显示 ${state.items.length} 条${f.max_items ? ` · 最多 ${e(f.max_items)} 条` : ''}</p><div class="actions"><button data-action="refresh">刷新</button><button class="primary" data-action="create-item">＋ 添加信息</button></div></div>
+  <form id="item-filter-form" class="card filter-card"><div class="filter-grid">
+    <div><label class="field" for="filter-role">角色</label><select id="filter-role" name="role_id">${roleOptions(f.role_id, true)}</select></div>
+    <div><label class="field" for="filter-kind">类型</label><select id="filter-kind" name="kind"><option value="">全部类型</option>${Object.entries(kinds).map(([id, label]) => `<option value="${id}" ${f.kind === id ? 'selected' : ''}>${label}</option>`).join('')}</select></div>
+    <div><label class="field" for="filter-q">标题 / 正文</label><input id="filter-q" name="q" maxlength="200" value="${e(f.q)}" placeholder="搜索文字"></div>
+    <div><label class="field" for="filter-tags">TAG（每行一个）</label><textarea id="filter-tags" name="tags" rows="2" maxlength="1100">${e(f.tags)}</textarea></div>
+    <div><label class="field" for="filter-mode">TAG 匹配</label><select id="filter-mode" name="tag_mode"><option value="all" ${f.tag_mode === 'all' ? 'selected' : ''}>同时包含全部 TAG</option><option value="any" ${f.tag_mode === 'any' ? 'selected' : ''}>包含任意 TAG</option></select></div>
+    <div><label class="field" for="filter-max">返回总条数</label><input id="filter-max" name="max_items" type="number" min="1" max="1000" value="${e(f.max_items)}" placeholder="不限（分页加载）"></div>
+    <div><label class="field" for="filter-from">创建时间 · 从</label><input id="filter-from" name="from" type="datetime-local" step="1" value="${e(f.from)}"></div>
+    <div><label class="field" for="filter-to">创建时间 · 至</label><input id="filter-to" name="to" type="datetime-local" step="1" value="${e(f.to)}"></div>
+  </div><div class="filter-footer"><span class="hint">按最新消息优先。时间按本地时区填写，发送时转换为 UTC；各条件可组合。</span><div class="actions"><button type="button" data-action="reset-filters">重置</button><button class="primary" type="submit">筛选</button></div></div></form>
+  ${state.items.length ? `<div class="item-list">${state.items.map((item) => `<article class="card"><div class="item-head"><div><h2>${e(item.title)}</h2><div class="item-tags"><span class="badge off">${kinds[item.kind]}</span><span class="badge">${statuses[item.status]}</span>${item.role_name ? `<span class="badge role-badge">${e(item.role_name)}</span>` : ''}${item.tags.map((tag) => `<span class="badge tag-badge">#${e(tag)}</span>`).join('')}</div></div><div class="actions"><button class="small" data-action="edit-item" data-id="${e(item.id)}">编辑</button><button class="small danger" data-action="delete-item" data-id="${e(item.id)}">删除</button></div></div><div class="item-content">${e(item.content)}</div><div class="item-footer">创建于 ${e(new Date(item.created_at).toLocaleString('zh-CN'))} · 版本 ${item.version}</div></article>`).join('')}</div>` : empty('没有匹配的信息', '调整筛选条件，或添加一条消息、笔记和任务。')}
+  ${state.itemsCursor ? '<div class="load-more"><button data-action="more-items">加载更多</button></div>' : ''}`;
 }
 function keysView() {
   return `<div class="heading"><p>为每位 AI 单独分配 Key，随时撤销访问。</p><button class="primary" data-action="create-key">＋ 创建 AI Key</button></div>${state.keys.length ? `<div class="table-wrap"><table><thead><tr><th>名称</th><th>权限</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead><tbody>${state.keys.map((key) => `<tr><td>${e(key.name)}</td><td>${key.permission === 'write' ? '读写' : '只读'}</td><td><span class="badge ${key.revoked_at ? 'off' : ''}">${key.revoked_at ? '已撤销' : '有效'}</span></td><td>${date(key.created_at)}</td><td>${key.revoked_at ? '—' : `<button class="small danger" data-action="revoke-key" data-id="${e(key.id)}">撤销</button>`}</td></tr>`).join('')}</tbody></table></div>` : empty('还没有 AI Key', '创建只读或读写 Key，将项目交给 AI 协作。')}`;
@@ -103,6 +144,18 @@ async function action(button) {
     case 'open-project': await loadProject(id); break;
     case 'tab': await loadProject(state.project.id, button.dataset.tab); break;
     case 'refresh': await loadProject(state.project.id, state.tab); break;
+    case 'more-items': await loadItems(true); render(); break;
+    case 'reset-filters': state.filters = emptyFilters(); await loadItems(); render(); break;
+    case 'create-role': case 'edit-role': {
+      const role = button.dataset.action === 'edit-role' ? state.roles.find((r) => r.id === id) : {};
+      modal(role.id ? '编辑角色' : '添加角色', field('角色名称', 'name', role.name, 'text', 100, true) + textField('角色职责', 'description', role.description, 2000), 'role', role.id); break;
+    }
+    case 'archive-role': {
+      const role = state.roles.find((r) => r.id === id);
+      if (!role.archived_at && !confirm('归档后不能给新消息标记此角色，历史消息仍会保留。确定归档？')) break;
+      await api(base() + '/roles/' + id, { method: 'PATCH', body: { archived: !role.archived_at } });
+      await loadProject(state.project.id, 'roles'); toast(role.archived_at ? '角色已恢复' : '角色已归档'); break;
+    }
     case 'create-user': modal('创建用户', field('姓名', 'name', '', 'text', 200, true) + field('邮箱', 'email', '', 'email', 254, true), 'user'); break;
     case 'edit-user': {
       const user = state.users.find((u) => u.id === id);
@@ -129,7 +182,7 @@ async function action(button) {
     }
     case 'create-item': case 'edit-item': {
       const item = button.dataset.action === 'edit-item' ? state.items.find((i) => i.id === id) : {};
-      modal(item.id ? '编辑信息' : '添加信息', field('标题', 'title', item.title, 'text', 200, true) + `<div class="form-row"><div><label class="field" for="field-kind">类型</label><select id="field-kind" name="kind">${Object.entries(kinds).map(([v, label]) => `<option value="${v}" ${v === item.kind ? 'selected' : ''}>${label}</option>`).join('')}</select></div><div><label class="field" for="field-status">状态</label><select id="field-status" name="status">${Object.entries(statuses).map(([v, label]) => `<option value="${v}" ${v === item.status ? 'selected' : ''}>${label}</option>`).join('')}</select></div></div>` + textField('正文', 'content', item.content, 50000), 'item', item.id, item.version); break;
+      modal(item.id ? '编辑信息' : '添加信息', field('标题', 'title', item.title, 'text', 200, true) + `<div class="form-row"><div><label class="field" for="field-kind">类型</label><select id="field-kind" name="kind">${Object.entries(kinds).map(([v, label]) => `<option value="${v}" ${v === item.kind ? 'selected' : ''}>${label}</option>`).join('')}</select></div><div><label class="field" for="field-status">状态</label><select id="field-status" name="status">${Object.entries(statuses).map(([v, label]) => `<option value="${v}" ${v === item.status ? 'selected' : ''}>${label}</option>`).join('')}</select></div></div>` + `<label class="field" for="field-role_id">角色</label><select id="field-role_id" name="role_id">${roleOptions(item.role_id)}</select>` + textField('TAG（每行一个，最多 20 个）', 'tags', (item.tags || []).join('\n'), 1100) + textField('正文', 'content', item.content, 50000), 'item', item.id, item.version); break;
     }
     case 'delete-item': {
       if (!confirm('删除这条信息？其他协作者同步时会收到删除标记。')) break;
@@ -154,7 +207,7 @@ document.addEventListener('click', async (event) => {
 });
 document.addEventListener('submit', async (event) => {
   const form = event.target;
-  if (!form.matches('#login-form, #upload-form, [data-form]')) return;
+  if (!form.matches('#login-form, #upload-form, #item-filter-form, [data-form]')) return;
   event.preventDefault();
   const submit = form.querySelector('[type=submit]');
   if (submit.disabled) return;
@@ -164,6 +217,11 @@ document.addEventListener('submit', async (event) => {
     if (form.id === 'login-form') {
       await api('/api/web/login', { method: 'POST', body: values });
       form.reset(); state.session = (await api('/api/web/session')).data; await loadHome();
+    } else if (form.id === 'item-filter-form') {
+      const old = state.filters;
+      state.filters = values;
+      try { await loadItems(); } catch (error) { state.filters = old; throw error; }
+      render();
     } else if (form.id === 'upload-form') {
       const file = values.file;
       if (file.size > 10 * 1024 * 1024) throw new Error('附件不能超过 10 MiB');
@@ -182,8 +240,17 @@ document.addEventListener('submit', async (event) => {
           const result = await api('/api/v1/projects' + (id ? '/' + id : ''), { method: id ? 'PATCH' : 'POST', body: values });
           dialog.close(); await loadProject(result.data.id); toast(id ? '项目已更新' : '项目已创建'); break;
         }
+        case 'role': {
+          await api(base() + '/roles' + (id ? '/' + id : ''), { method: id ? 'PATCH' : 'POST', body: values });
+          dialog.close(); await loadProject(state.project.id, 'roles'); toast('角色已保存'); break;
+        }
         case 'item': {
-          if (id) values.version = Number(form.dataset.version);
+          values.tags = splitTags(values.tags);
+          values.role_id = values.role_id || null;
+          if (id) {
+            values.version = Number(form.dataset.version);
+            if (values.role_id === state.items.find((item) => item.id === id).role_id) delete values.role_id;
+          }
           await api(base() + '/items' + (id ? '/' + id : ''), { method: id ? 'PATCH' : 'POST', body: values });
           dialog.close(); await loadProject(state.project.id, 'items'); toast('信息已保存'); break;
         }

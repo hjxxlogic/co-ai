@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "co-ai REST API",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "description": "Multi-user project coordination. Project keys can only access their assigned project. Read keys cannot write. User keys manage owned projects. See /llm/API.md. HTTPS only: HTTP API requests return 426 without executing handlers. Disabled users cannot access any API. Archived projects are unavailable to project keys."
   },
   "servers": [
@@ -670,7 +670,7 @@
     "/api/v1/projects/{projectId}/items": {
       "get": {
         "operationId": "get_api_v1_projects_projectId_items",
-        "summary": "List project items",
+        "summary": "Search project items by role, TAGs, creation time and total cap",
         "responses": {
           "200": {
             "description": "Success",
@@ -690,11 +690,25 @@
                         "string",
                         "null"
                       ]
+                    },
+                    "total_count": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "max_items": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 1,
+                      "maximum": 1000
                     }
                   },
                   "required": [
                     "data",
-                    "next_cursor"
+                    "next_cursor",
+                    "total_count",
+                    "max_items"
                   ]
                 }
               }
@@ -760,7 +774,109 @@
             "schema": {
               "type": "string"
             },
-            "description": "Use the previous next_cursor. IDs sort lexicographically; restart pagination to fully resync."
+            "description": "Opaque next_cursor from previous page; preserve filters/order/max_items. Default ID ordering remains compatible."
+          },
+          {
+            "name": "role_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Project role UUID, or none for unassigned items."
+          },
+          {
+            "name": "tag",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "maxItems": 20,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 50
+              },
+              "description": "Trimmed, NFC normalized, lowercased and deduplicated; no control characters."
+            },
+            "description": "Repeated exact TAGs; normalized like writes.",
+            "style": "form",
+            "explode": true
+          },
+          {
+            "name": "tag_mode",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "all",
+                "any"
+              ],
+              "default": "all"
+            },
+            "description": "Match all or any requested TAGs."
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "note",
+                "task",
+                "decision",
+                "message"
+              ]
+            },
+            "description": "Item kind."
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "description": "Literal title/body substring; ASCII case insensitive."
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "Inclusive creation time boundary; timezone required."
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "Inclusive creation time boundary; timezone required."
+          },
+          {
+            "name": "max_items",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            },
+            "description": "Total cap across all pages, independent of per-page limit."
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "id",
+                "newest",
+                "oldest"
+              ]
+            },
+            "description": "Default newest with max_items, otherwise id. Chronological ties use ID."
           }
         ]
       },
@@ -1348,6 +1464,217 @@
           }
         ]
       }
+    },
+    "/api/v1/projects/{projectId}/roles": {
+      "get": {
+        "operationId": "listProjectRoles",
+        "summary": "List project roles; project AI keys can read",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Role"
+                      }
+                    },
+                    "next_cursor": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "next_cursor"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error. 400 validation, 401 authentication, 403 permission, 404 scoped resource missing, 409 conflict, 413 body size, 415 content type, 500/503 service failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "426": {
+            "description": "HTTPS required. HTTP requests do not execute operations."
+          }
+        },
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Previous next_cursor (role ID)."
+          },
+          {
+            "name": "include_archived",
+            "in": "query",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "description": "Include archived roles for historical attribution."
+          }
+        ]
+      },
+      "post": {
+        "operationId": "createProjectRole",
+        "summary": "Owner user key: create a project role",
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Role"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error. 400 validation, 401 authentication, 403 permission, 404 scoped resource missing, 409 conflict, 413 body size, 415 content type, 500/503 service failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "426": {
+            "description": "HTTPS required. HTTP requests do not execute operations."
+          }
+        },
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoleCreate"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{projectId}/roles/{roleId}": {
+      "patch": {
+        "operationId": "updateProjectRole",
+        "summary": "Owner user key: edit, archive or restore a role",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Role"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error. 400 validation, 401 authentication, 403 permission, 404 scoped resource missing, 409 conflict, 413 body size, 415 content type, 500/503 service failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "426": {
+            "description": "HTTPS required. HTTP requests do not execute operations."
+          }
+        },
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "roleId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RolePatch"
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1393,6 +1720,24 @@
               "done",
               "archived"
             ]
+          },
+          "role_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Active role in this project; null clears assignment."
+          },
+          "tags": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 50
+            },
+            "description": "Trimmed, NFC normalized, lowercased and deduplicated; no control characters."
           }
         },
         "required": [
@@ -1433,6 +1778,24 @@
           "version": {
             "type": "integer",
             "minimum": 1
+          },
+          "role_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Active role in this project; null clears assignment."
+          },
+          "tags": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 50
+            },
+            "description": "Trimmed, NFC normalized, lowercased and deduplicated; no control characters."
           }
         },
         "required": [
@@ -1616,6 +1979,31 @@
               "null"
             ],
             "format": "date-time"
+          },
+          "role_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Active role in this project; null clears assignment."
+          },
+          "tags": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 50
+            },
+            "description": "Trimmed, NFC normalized, lowercased and deduplicated; no control characters."
+          },
+          "role_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "readOnly": true
           }
         }
       },
@@ -1849,6 +2237,79 @@
         },
         "additionalProperties": false,
         "minProperties": 1
+      },
+      "RoleCreate": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 2000
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "RolePatch": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 2000
+          },
+          "archived": {
+            "type": "boolean"
+          }
+        },
+        "minProperties": 1,
+        "additionalProperties": false
+      },
+      "Role": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 2000
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "archived_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
       }
     }
   }

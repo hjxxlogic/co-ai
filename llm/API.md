@@ -12,7 +12,7 @@ OAuth 使用本站授权服务器的授权码 + S256 PKCE 流程，支持客户�
 
 ## MCP 接口
 
-`POST /mcp` 提供无状态 Streamable HTTP MCP 服务，覆盖本文和 OpenAPI 中全部 32 个 REST 操作。连接配置及附件、Web 会话说明见 [MCP 连接](./README.md#mcp-连接)。HTTP `/mcp` 请求返回 `426`，GET/DELETE 返回 `405`；工具发现与文档资源公开，数据操作复用 REST 权限。
+`POST /mcp` 提供无状态 Streamable HTTP MCP 服务，覆盖本文和 OpenAPI 中全部 42 个 REST 操作。连接配置及附件、Web 会话说明见 [MCP 连接](./README.md#mcp-连接)。HTTP `/mcp` 请求返回 `426`，GET/DELETE 返回 `405`；工具发现与文档资源公开，数据操作复用 REST 权限。
 
 工具名称等于 REST `operationId`，路径和查询参数放在 `arguments` 顶层，JSON 正文放在 `arguments.body`。例如更新信息使用 `patch_api_v1_projects_projectId_items_itemId`，参数为 `{"projectId":"...","itemId":"...","body":{"version":1,"status":"done"}}`；角色工具为 `listProjectRoles`、`createProjectRole`、`updateProjectRole`。重复 TAG 查询使用 `tag: ["api", "urgent"]`，布尔和整数查询参数使用 JSON 布尔和整数。
 
@@ -168,3 +168,41 @@ Authorization: Bearer API_KEY
 - `POST /api/web/reset-key`：用户会话重置自己的用户管理 Key，成功 `201` 返回新 Key，旧用户管理 Key 和相应登录会话失效，密码登录会话保留。
 
 管理员创建用户时用户名密码必须一起提供；编辑用户时可修改用户名或重置密码，首次设置密码必须已有或同时提供用户名。用户名冲突返回 `409`，错误登录凭据返回 `401`，错误当前密码返回 `403`。密码登录每 15 分钟最多允许每用户名 10 次、每来源 IP 50 次尝试，超出返回 `429`。修改凭据保留用户 ID、全部项目数据及项目 AI Key；响应不包含密码或密码哈希。
+
+## 项目 D1 数据表
+
+每个项目可以配置多张独立的 Cloudflare D1（SQLite）物理表。接口不接受任意 SQL；表、字段和过滤操作经验证后使用参数化语句执行，无法访问系统表或其他项目的数据。数据库升级需应用 `0007_project_tables.sql`。
+
+入口：`/api/v1/projects/{projectId}/tables`。每张表创建时定义 1–32 个字段，字段名以英文字母开头，后续为字母、数字或下划线，最多 63 个字符，忽略大小写不能重名。`type` 支持 `text`、`integer`、`real`、`boolean`、`json`，`required` 默认 false。必填字段不允许缺失或 null；可选字段缺失保存为 null。integer 为安全整数；text/JSON 单字段最多 20000 个字符，请求正文最多 128 KiB。
+
+| 方法与路径（相对此入口） | 功能 | 权限 |
+| --- | --- | --- |
+| GET `/` | 列出项目表 | read |
+| POST `/` | 创建表，正文 `{name, description?, columns}` | 所有者 / OAuth manage |
+| GET `/{tableId}` | 获取表及字段定义 | read |
+| PATCH `/{tableId}` | 修改 name、description；字段定义固定 | 所有者 / OAuth manage |
+| DELETE `/{tableId}` | 永久删除整张表及全部记录，无需正文 | 所有者 / OAuth manage |
+| GET `/{tableId}/rows` | 分页查询记录及过滤 | read |
+| POST `/{tableId}/rows` | 新增记录，正文 `{values: {...}}` | write |
+| GET `/{tableId}/rows/{rowId}` | 读取单条记录 | read |
+| PATCH `/{tableId}/rows/{rowId}` | 修改部分字段，正文 `{version, values: {...}}` | write |
+| DELETE `/{tableId}/rows/{rowId}` | 永久删除记录，正文 `{version}` | write |
+
+表和记录的分页均支持 `limit=1..100`（默认 50）、`after=next_cursor`，按服务端生成的 ID 升序返回 `{data, next_cursor}`。记录格式为 `{id, version, created_at, updated_at, values}`，新增记录的 version 为 1；PATCH 每次成功加一。更新/删除时版本不匹配返回 409，记录不存在返回 404。表名在项目内不区分大小写且唯一；重名返回 409。
+
+记录查询的 `filters` 为 URL 编码的 JSON 数组，最多 20 个条件，全部以 AND 组合。例如 `[{"column":"amount","op":"gte","value":10},{"column":"title","op":"contains","value":"客户"}]`。支持 `eq/ne/gt/gte/lt/lte/contains/is_null`；字段名和 value 类型必须匹配定义；contains 仅用于文本，按字面量区分大小写匹配（不是 LIKE 模式）；is_null 不需 value，eq/ne 与 null 分别表示 IS NULL/IS NOT NULL。filters 最长 16000 字符。查询只有 GET，不会因读取数据要求 write scope。
+
+```json
+{
+  "name": "customers",
+  "description": "项目客户记录",
+  "columns": [
+    {"name": "title", "type": "text", "required": true},
+    {"name": "amount", "type": "real"},
+    {"name": "active", "type": "boolean"},
+    {"name": "extra", "type": "json"}
+  ]
+}
+```
+
+项目只读 Key 无法新增/修改/删除记录，项目读写 Key 可以管理记录但不能创建、修改或删除表。项目归档后项目 Key 暂停访问；项目所有者仍能查看和维护表。MCP 对应工具为 `listProjectTables/createProjectTable/getProjectTable/updateProjectTable/deleteProjectTable` 和 `listTableRows/createTableRow/getTableRow/updateTableRow/deleteTableRow`；JSON 正文放入工具参数 `body`。使用 `getProjectTable` 读取字段定义后再写入，更新前读取记录版本。工作台的“数据表”页也可创建表、查看和编辑记录。

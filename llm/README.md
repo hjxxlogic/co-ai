@@ -38,7 +38,7 @@ MCP 入口为 `https://co-ai.xlogic.cc/mcp`，使用 Streamable HTTP，支持 `i
 
 具体配置格式以客户端为准。AI 推荐使用项目 Key；用户 Key 用于用户自己的项目管理，管理员令牌用于用户管理。工具参数中无需再次传入 API Key。
 
-全部 32 个 REST 操作均有对应工具，名称为 [OpenAPI](./openapi.json) 中的 `operationId`。路径和查询参数直接作为工具参数，JSON 请求正文放入 `body`。例如创建项目消息：
+全部 42 个 REST 操作均有对应工具，名称为 [OpenAPI](./openapi.json) 中的 `operationId`。路径和查询参数直接作为工具参数，JSON 请求正文放入 `body`。例如创建项目消息：
 
 ```json
 {
@@ -161,3 +161,7 @@ curl "$BASE_URL/api/v1/projects/$PROJECT_ID/items" \
 | 500 / 503 | 服务错误；不要盲目重复创建，先核对是否已经创建成功 |
 
 创建接口没有幂等键。如果请求超时，先查询现有条目，避免重复写入。
+
+## 项目结构化数据表
+
+每个项目可配置多张独立 D1 表。在工作台“数据表”页定义字段，或通过 `createProjectTable` 工具创建（需要所有者 Key / OAuth manage）。AI 先用 `listProjectTables`、`getProjectTable` 发现表和字段，再用 `listTableRows`、`getTableRow`、`createTableRow`、`updateTableRow`、`deleteTableRow` 读写。项目读写 Key 可管理记录，只读 Key 只能查询；所有者可管理表。记录修改/删除必须带当前 version，冲突后重新读取并合并。详情及过滤规则见 [项目 D1 数据表](./API.md#项目-d1-数据表)。

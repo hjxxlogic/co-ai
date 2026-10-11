@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "co-ai REST API",
-    "version": "0.3.0",
+    "version": "0.4.0",
     "description": "Multi-user project coordination. Project keys can only access their assigned project. Read keys cannot write. User keys manage owned projects. See /llm/API.md. HTTPS only: HTTP API requests return 426 without executing handlers. Disabled users cannot access any API. Archived projects are unavailable to project keys. OAuth authorization-code flow with mandatory S256 PKCE is also supported; access tokens are bound to the REST or MCP resource. Discover /.well-known/oauth-authorization-server and /.well-known/oauth-protected-resource/api/v1."
   },
   "servers": [
@@ -2199,6 +2199,757 @@
           }
         ]
       }
+    },
+    "/api/v1/projects/{projectId}/tables": {
+      "get": {
+        "operationId": "listProjectTables",
+        "summary": "List configured project D1 tables",
+        "responses": {
+          "default": {
+            "description": "Error. 400 validation, 401 authentication, 403 permission, 404 scoped resource missing, 409 conflict, 413 body size, 415 content type, 500/503 service failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "426": {
+            "description": "HTTPS required. HTTP requests do not execute operations."
+          },
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/ProjectTable"
+                      }
+                    },
+                    "next_cursor": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "next_cursor"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Previous next_cursor (role ID)."
+          }
+        ],
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "OAuth": [
+              "read"
+            ]
+          }
+        ]
+      },
+      "post": {
+        "operationId": "createProjectTable",
+        "summary": "Owner: create a D1 table with immutable typed columns",
+        "responses": {
+          "default": {
+            "description": "Error. 400 validation, 401 authentication, 403 permission, 404 scoped resource missing, 409 conflict, 413 body size, 415 content type, 500/503 service failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "426": {
+            "description": "HTTPS required. HTTP requests do not execute operations."
+          },
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ProjectTable"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectTableCreate"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "OAuth": [
+              "manage"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{projectId}/tables/{tableId}": {
+      "get": {
+        "operationId": "getProjectTable",
+        "summary": "Read project D1 table schema",
+        "responses": {
+          "default": {
+            "description": "Error. 400 validation, 401 authentication, 403 permission, 404 scoped resource missing, 409 conflict, 413 body size, 415 content type, 500/503 service failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "426": {
+            "description": "HTTPS required. HTTP requests do not execute operations."
+          },
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ProjectTable"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tableId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "OAuth": [
+              "read"
+            ]
+          }
+        ]
+      },
+      "patch": {
+        "operationId": "updateProjectTable",
+        "summary": "Owner: update table name or description (columns immutable)",
+        "responses": {
+          "default": {
+            "description": "Error. 400 validation, 401 authentication, 403 permission, 404 scoped resource missing, 409 conflict, 413 body size, 415 content type, 500/503 service failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "426": {
+            "description": "HTTPS required. HTTP requests do not execute operations."
+          },
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ProjectTable"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tableId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectTablePatch"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "OAuth": [
+              "manage"
+            ]
+          }
+        ]
+      },
+      "delete": {
+        "operationId": "deleteProjectTable",
+        "summary": "Owner: permanently drop table and all its records",
+        "responses": {
+          "default": {
+            "description": "Error. 400 validation, 401 authentication, 403 permission, 404 scoped resource missing, 409 conflict, 413 body size, 415 content type, 500/503 service failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "426": {
+            "description": "HTTPS required. HTTP requests do not execute operations."
+          },
+          "204": {
+            "description": "Success"
+          }
+        },
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tableId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "OAuth": [
+              "manage"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{projectId}/tables/{tableId}/rows": {
+      "get": {
+        "operationId": "listTableRows",
+        "summary": "Read rows with typed filters and ID cursor pagination",
+        "responses": {
+          "default": {
+            "description": "Error. 400 validation, 401 authentication, 403 permission, 404 scoped resource missing, 409 conflict, 413 body size, 415 content type, 500/503 service failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "426": {
+            "description": "HTTPS required. HTTP requests do not execute operations."
+          },
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/TableRow"
+                      }
+                    },
+                    "next_cursor": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "next_cursor"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tableId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Previous next_cursor (role ID)."
+          },
+          {
+            "name": "filters",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 16000
+            },
+            "description": "JSON array of at most 20 AND conditions: {column,op,value}. op: eq/ne/gt/gte/lt/lte/contains/is_null. Exact declared column names; contains is case-sensitive literal text; is_null needs no value. eq/ne with null use IS NULL/IS NOT NULL. Values must match column type. No arbitrary SQL."
+          }
+        ],
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "OAuth": [
+              "read"
+            ]
+          }
+        ]
+      },
+      "post": {
+        "operationId": "createTableRow",
+        "summary": "Insert a typed row in the project table",
+        "responses": {
+          "default": {
+            "description": "Error. 400 validation, 401 authentication, 403 permission, 404 scoped resource missing, 409 conflict, 413 body size, 415 content type, 500/503 service failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "426": {
+            "description": "HTTPS required. HTTP requests do not execute operations."
+          },
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/TableRow"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tableId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TableRowCreate"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "OAuth": [
+              "write"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/projects/{projectId}/tables/{tableId}/rows/{rowId}": {
+      "get": {
+        "operationId": "getTableRow",
+        "summary": "Read one project table row",
+        "responses": {
+          "default": {
+            "description": "Error. 400 validation, 401 authentication, 403 permission, 404 scoped resource missing, 409 conflict, 413 body size, 415 content type, 500/503 service failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "426": {
+            "description": "HTTPS required. HTTP requests do not execute operations."
+          },
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/TableRow"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tableId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rowId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "OAuth": [
+              "read"
+            ]
+          }
+        ]
+      },
+      "patch": {
+        "operationId": "updateTableRow",
+        "summary": "Update specified row columns with optimistic version check",
+        "responses": {
+          "default": {
+            "description": "Error. 400 validation, 401 authentication, 403 permission, 404 scoped resource missing, 409 conflict, 413 body size, 415 content type, 500/503 service failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "426": {
+            "description": "HTTPS required. HTTP requests do not execute operations."
+          },
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/TableRow"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tableId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rowId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TableRowPatch"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "OAuth": [
+              "write"
+            ]
+          }
+        ]
+      },
+      "delete": {
+        "operationId": "deleteTableRow",
+        "summary": "Delete one row with optimistic version check",
+        "responses": {
+          "default": {
+            "description": "Error. 400 validation, 401 authentication, 403 permission, 404 scoped resource missing, 409 conflict, 413 body size, 415 content type, 500/503 service failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "426": {
+            "description": "HTTPS required. HTTP requests do not execute operations."
+          },
+          "204": {
+            "description": "Success"
+          }
+        },
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tableId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rowId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Version"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "OAuth": [
+              "write"
+            ]
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -2981,6 +3732,181 @@
             "format": "date-time"
           }
         }
+      },
+      "TableColumn": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9_]{0,62}$"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "text",
+              "integer",
+              "real",
+              "boolean",
+              "json"
+            ]
+          },
+          "required": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "name",
+          "type"
+        ],
+        "additionalProperties": false
+      },
+      "ProjectTableCreate": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 5000,
+            "default": ""
+          },
+          "columns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TableColumn"
+            },
+            "minItems": 1,
+            "maxItems": 32
+          }
+        },
+        "required": [
+          "name",
+          "columns"
+        ],
+        "additionalProperties": false
+      },
+      "ProjectTablePatch": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 5000
+          }
+        },
+        "required": [],
+        "additionalProperties": false,
+        "minProperties": 1
+      },
+      "ProjectTable": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "columns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TableColumn"
+            }
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "project_id",
+          "name",
+          "description",
+          "columns",
+          "created_at",
+          "updated_at"
+        ],
+        "additionalProperties": false
+      },
+      "TableRowCreate": {
+        "type": "object",
+        "properties": {
+          "values": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Values keyed by exact declared column names. Unknown columns rejected; required columns must be non-null on creation."
+          }
+        },
+        "required": [
+          "values"
+        ],
+        "additionalProperties": false
+      },
+      "TableRowPatch": {
+        "type": "object",
+        "properties": {
+          "values": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Values keyed by exact declared column names. Unknown columns rejected; required columns must be non-null on creation."
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "values",
+          "version"
+        ],
+        "additionalProperties": false
+      },
+      "TableRow": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          },
+          "values": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Values keyed by exact declared column names. Unknown columns rejected; required columns must be non-null on creation."
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "version",
+          "values",
+          "created_at",
+          "updated_at"
+        ],
+        "additionalProperties": false
       }
     }
   }

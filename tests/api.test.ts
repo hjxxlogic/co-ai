@@ -74,7 +74,7 @@ beforeAll(async () => {
   const bindings = await mf.getBindings();
   env = { ...bindings, ADMIN_TOKEN: admin, DOCS: { fetch: async (req: Request) => new Response(new URL(req.url).pathname.endsWith('.html') ? '<!doctype html><h1>AI docs</h1><a href="/llm/API.html">API</a>' : 'API docs', { headers: { 'Content-Type': new URL(req.url).pathname.endsWith('.html') ? 'text/html; charset=utf-8' : 'text/plain; charset=utf-8' } }) } } as unknown as Env;
   // D1 exec expects each statement on one line.
-  for (const file of ['0001_initial.sql', '0002_web_management.sql', '0003_roles_and_tags.sql', '0004_password_login.sql', '0005_recipient_roles.sql', '0006_oauth.sql']) {
+  for (const file of ['0001_initial.sql', '0002_web_management.sql', '0003_roles_and_tags.sql', '0004_password_login.sql', '0005_recipient_roles.sql', '0006_oauth.sql', '0007_project_tables.sql']) {
     if (file === '0004_password_login.sql') {
       const time = '2025-01-01T00:00:00.000Z';
       await env.DB.batch([
@@ -1076,4 +1076,143 @@ it('prevents concurrent refresh from keeping a live authorization and invalidate
   const rotatedEnv = { ...env, ADMIN_TOKEN: 'a-new-administrator-secret-with-32-characters' };
   const denied = await app.request('https://co-ai.test/api/admin/users', { headers: { Authorization: 'Bearer ' + adminGrant.access_token } }, rotatedEnv);
   expect(denied.status).toBe(401);
+});
+
+const testColumns = [
+  { name: 'title', type: 'text', required: true },
+  { name: 'count', type: 'integer' },
+  { name: 'amount', type: 'real' },
+  { name: 'active', type: 'boolean' },
+  { name: 'extra', type: 'json' },
+];
+async function createDataTable(key: string, project: string, name = 'Records') {
+  const response = await request(`/api/v1/projects/${project}/tables`, key, 'POST', { name, columns: testColumns });
+  expect(response.status).toBe(201);
+  return (await response.json() as any).data;
+}
+describe('Project D1 data tables', () => {
+  it('creates multiple physical typed tables and reads, filters, updates and deletes versioned records', async () => {
+    const owner = await provision('tables-crud@test.com'), project = await createProject(owner);
+    const table = await createDataTable(owner, project), other = await createDataTable(owner, project, 'Other');
+    const base = `/api/v1/projects/${project}/tables`, rows = `${base}/${table.id}/rows`;
+    expect((await (await request(base, owner)).json() as any).data).toHaveLength(2);
+    const discovery = await (await request(`/api/v1/projects/${project}/llm`, owner)).json() as any;
+    expect(discovery.data.endpoints.tables).toBe('https://co-ai.test' + base);
+    const physical = 'project_data_' + table.id.replaceAll('-', '');
+    expect(await env.DB.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").bind(physical).first()).toBeTruthy();
+    const values = { title: "O'Reilly %_ 客户", count: 5, amount: 12.5, active: false, extra: { nested: [true, null, '内容'] } };
+    const created = await request(rows, owner, 'POST', { values });
+    expect(created.status).toBe(201);
+    const row = (await created.json() as any).data;
+    expect(row.values).toEqual(values); expect(row.version).toBe(1);
+    const minimal = await request(rows, owner, 'POST', { values: { title: 'Second' } });
+    expect(minimal.status).toBe(201);
+    expect((await minimal.json() as any).data.values).toEqual({ title: 'Second', count: null, amount: null, active: null, extra: null });
+    expect((await (await request(`${base}/${other.id}/rows`, owner)).json() as any).data).toEqual([]);
+    const filter = encodeURIComponent(JSON.stringify([{ column: 'amount', op: 'gte', value: 10 }, { column: 'title', op: 'contains', value: '%_' }, { column: 'active', op: 'eq', value: false }]));
+    expect((await (await request(rows + '?filters=' + filter, owner)).json() as any).data.map((record: any) => record.id)).toEqual([row.id]);
+    const nullFilter = encodeURIComponent(JSON.stringify([{ column: 'count', op: 'is_null' }]));
+    expect((await (await request(rows + '?filters=' + nullFilter, owner)).json() as any).data).toHaveLength(1);
+    const firstPage = await (await request(rows + '?limit=1', owner)).json() as any;
+    expect(firstPage.data).toHaveLength(1); expect(firstPage.next_cursor).toBeTruthy();
+    const secondPage = await (await request(rows + '?limit=1&after=' + firstPage.next_cursor, owner)).json() as any;
+    expect(secondPage.data).toHaveLength(1); expect(secondPage.next_cursor).toBeNull();
+    expect(secondPage.data[0].id).not.toBe(firstPage.data[0].id);
+    const changed = await request(rows + '/' + row.id, owner, 'PATCH', { version: 1, values: { active: true, count: 6 } });
+    expect(changed.status).toBe(200);
+    const next = (await changed.json() as any).data;
+    expect(next.version).toBe(2); expect(next.values).toEqual({ ...values, active: true, count: 6 });
+    expect((await request(rows + '/' + row.id, owner, 'PATCH', { version: 1, values: { count: 7 } })).status).toBe(409);
+    expect((await request(rows + '/' + row.id, owner, 'DELETE', { version: 1 })).status).toBe(409);
+    expect((await request(rows + '/' + row.id, owner, 'DELETE', { version: 2 })).status).toBe(204);
+    expect((await request(rows + '/' + row.id, owner)).status).toBe(404);
+    expect((await request(rows + '/' + row.id, owner, 'PATCH', { version: 2, values: { count: 7 } })).status).toBe(404);
+    expect((await request(`${base}/${table.id}`, owner, 'PATCH', { name: 'Renamed', description: 'New description' })).status).toBe(200);
+    await request(`${base}/${table.id}`, owner, 'PATCH', { name: 'Again' });
+    expect((await (await request(`${base}/${table.id}`, owner)).json() as any).data.description).toBe('New description');
+    expect((await request(`${base}/${table.id}`, owner, 'DELETE')).status).toBe(204);
+    expect(await env.DB.prepare('SELECT name FROM sqlite_master WHERE name = ?').bind(physical).first()).toBeNull();
+    expect((await request(`${base}/${table.id}`, owner)).status).toBe(404);
+    expect((await request(`${base}/${other.id}`, owner)).status).toBe(200);
+  });
+
+  it('rejects invalid schemas and values, arbitrary identifiers, SQL injection and name collisions', async () => {
+    const owner = await provision('tables-validation@test.com'), project = await createProject(owner);
+    const base = `/api/v1/projects/${project}/tables`, table = await createDataTable(owner, project), rows = `${base}/${table.id}/rows`;
+    for (const columns of [[], [{ name: '_id', type: 'text' }], [{ name: 'x"; DROP TABLE users;--', type: 'text' }], [{ name: 'name', type: 'mysql' }], [{ name: 'X', type: 'text' }, { name: 'x', type: 'integer' }], Array.from({ length: 33 }, (_, i) => ({ name: 'c' + i, type: 'text' }))]) {
+      expect((await request(base, owner, 'POST', { name: 'Invalid', columns })).status).toBe(400);
+    }
+    expect((await request(base, owner, 'POST', { name: 'records', columns: testColumns })).status).toBe(409);
+    const other = await createDataTable(owner, project, 'Other');
+    expect((await request(`${base}/${other.id}`, owner, 'PATCH', { name: 'RECORDS' })).status).toBe(409);
+    const concurrent = await Promise.all([request(base, owner, 'POST', { name: 'Concurrent', columns: testColumns }), request(base, owner, 'POST', { name: 'Concurrent', columns: testColumns })]);
+    expect(concurrent.map((response) => response.status).sort()).toEqual([201, 409]);
+
+    expect((await request(`${base}/${table.id}`, owner, 'PATCH', { columns: testColumns })).status).toBe(400);
+    for (const values of [{}, { title: null }, { title: 3 }, { title: 'ok', count: 1.1 }, { title: 'ok', count: Number.MAX_SAFE_INTEGER + 1 }, { title: 'ok', active: 1 }, { title: 'ok', unknown: 'x' }, { title: 'x'.repeat(20001) }, { title: 'ok', extra: 'x'.repeat(20001) }]) {
+      expect((await request(rows, owner, 'POST', { values })).status).toBe(400);
+    }
+    for (const filters of ['no-json', '{}', JSON.stringify([{ column: 'unknown', op: 'eq', value: 1 }]), JSON.stringify([{ column: 'count', op: 'contains', value: 1 }]), JSON.stringify([{ column: 'title', op: 'eq' }]), JSON.stringify([{ column: 'title', op: 'eq); DROP TABLE users;--', value: 'x' }])]) {
+      expect((await request(rows + '?filters=' + encodeURIComponent(filters), owner)).status).toBe(400);
+    }
+    expect((await request(base + '/users/rows', owner)).status).toBe(404);
+    expect((await request(base + '/' + encodeURIComponent('x"; DROP TABLE users;--') + '/rows', owner)).status).toBe(404);
+    expect((await request('/api/v1/me', owner)).status).toBe(200);
+    const created = await request(rows, owner, 'POST', { values: { title: "'; DROP TABLE users;--" } });
+    expect(created.status).toBe(201);
+    const row = (await created.json() as any).data;
+    expect((await request(rows + '/' + row.id, owner, 'PATCH', { version: 1, values: {} })).status).toBe(400);
+    expect((await request(rows + '/' + row.id, owner, 'DELETE', { version: 0 })).status).toBe(400);
+    expect((await request('/api/v1/me', owner)).status).toBe(200);
+  });
+
+  it('isolates projects and users and preserves read-only, schema management and archived-project boundaries', async () => {
+    const owner = await provision('tables-owner@test.com'), foreign = await provision('tables-foreign@test.com');
+    const project = await createProject(owner), second = await createProject(owner), foreignProject = await createProject(foreign);
+    const table = await createDataTable(owner, project), writer = (await projectKey(owner, project)).api_key, reader = (await projectKey(owner, project, 'read')).api_key;
+    const base = `/api/v1/projects/${project}/tables`, rows = `${base}/${table.id}/rows`;
+    expect((await request(base, writer, 'POST', { name: 'Forbidden', columns: testColumns })).status).toBe(403);
+    expect((await request(`${base}/${table.id}`, writer, 'PATCH', { name: 'Forbidden' })).status).toBe(403);
+    expect((await request(`${base}/${table.id}`, writer, 'DELETE')).status).toBe(403);
+    expect((await request(rows, reader, 'POST', { values: { title: 'No' } })).status).toBe(403);
+    const row = (await (await request(rows, writer, 'POST', { values: { title: 'Visible' } })).json() as any).data;
+    expect((await request(rows, reader)).status).toBe(200);
+    expect((await request(rows + '/' + row.id, reader, 'PATCH', { version: 1, values: { title: 'No' } })).status).toBe(403);
+    expect((await request(rows + '/' + row.id, reader, 'DELETE', { version: 1 })).status).toBe(403);
+    expect((await request(rows, foreign)).status).toBe(404);
+    expect((await request(`/api/v1/projects/${second}/tables/${table.id}/rows`, owner)).status).toBe(404);
+    expect((await request(`/api/v1/projects/${foreignProject}/tables/${table.id}/rows`, foreign)).status).toBe(404);
+    expect((await request(`/api/v1/projects/${second}/tables`, writer)).status).toBe(404);
+    await request(`/api/v1/projects/${project}`, owner, 'PATCH', { archived: true });
+    expect((await request(rows, writer)).status).toBe(404);
+    expect((await request(rows, owner)).status).toBe(200);
+    await request(`/api/v1/projects/${project}`, owner, 'PATCH', { archived: false });
+    expect((await request(rows, writer)).status).toBe(200);
+  });
+
+  it('exposes table and row workflows through MCP with OAuth read, write and manage scopes', async () => {
+    const owner = await provision('tables-mcp@test.com'), projectId = await createProject(owner), cookie = await login('user', owner), clientId = await registerOAuth('Tables');
+    const resource = 'https://co-ai.test/mcp';
+    const management = await oauthTokens(clientId, await approveOAuth(await startOAuth(clientId, cookie, resource, 'manage'), cookie), resource);
+    const created = await mcpTool('createProjectTable', { projectId, body: { name: 'MCP table', columns: testColumns } }, mcpBearer(management.access_token));
+    expect(created.status).toBe(201);
+    const tableId = created.body.data.id;
+    const tokens = await oauthTokens(clientId, await approveOAuth(await startOAuth(clientId, cookie, resource, 'write'), cookie, projectId), resource);
+    const headers = mcpBearer(tokens.access_token);
+    expect((await mcpTool('getProjectTable', { projectId, tableId }, headers)).status).toBe(200);
+    const row = await mcpTool('createTableRow', { projectId, tableId, body: { values: { title: 'AI record', count: 2 } } }, headers);
+    expect(row.status).toBe(201);
+    const rowId = row.body.data.id;
+    expect((await mcpTool('listTableRows', { projectId, tableId, filters: JSON.stringify([{ column: 'count', op: 'eq', value: 2 }]) }, headers)).body.data).toHaveLength(1);
+    expect((await mcpTool('updateTableRow', { projectId, tableId, rowId, body: { version: 1, values: { count: 3 } } }, headers)).status).toBe(200);
+    expect((await mcpTool('getTableRow', { projectId, tableId, rowId }, headers)).body.data.values.count).toBe(3);
+    const denied = await mcpTool('deleteProjectTable', { projectId, tableId }, headers);
+    expect(denied.status).toBe(403); expect(denied.response.headers.get('WWW-Authenticate')).toContain('scope="manage"');
+    const readTokens = await oauthTokens(clientId, await approveOAuth(await startOAuth(clientId, cookie, resource), cookie, projectId), resource);
+    expect((await mcpTool('listTableRows', { projectId, tableId }, mcpBearer(readTokens.access_token))).status).toBe(200);
+    expect((await mcpTool('deleteTableRow', { projectId, tableId, rowId, body: { version: 2 } }, mcpBearer(readTokens.access_token))).status).toBe(403);
+    expect((await mcpTool('deleteTableRow', { projectId, tableId, rowId, body: { version: 2 } }, headers)).status).toBe(204);
+    expect((await mcpTool('updateProjectTable', { projectId, tableId, body: { description: 'Updated' } }, mcpBearer(management.access_token))).status).toBe(200);
+    expect((await mcpTool('deleteProjectTable', { projectId, tableId }, mcpBearer(management.access_token))).status).toBe(204);
+  });
 });

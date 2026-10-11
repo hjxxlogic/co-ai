@@ -2,7 +2,7 @@ const root = document.querySelector('#app');
 const dialog = document.querySelector('#dialog');
 const toastBox = document.querySelector('#toast');
 const emptyFilters = () => ({ role_id: '', recipient_role_id: '', tags: '', tag_mode: 'all', kind: '', q: '', from: '', to: '', updated_since: '', max_items: '' });
-const state = { session: null, users: [], projects: [], project: null, items: [], roles: [], keys: [], files: [], tab: 'overview', query: '', filters: emptyFilters(), itemsTotal: 0, itemsCursor: null };
+const state = { session: null, users: [], projects: [], project: null, items: [], roles: [], keys: [], files: [], tables: [], table: null, rows: [], rowsCursor: null, tab: 'overview', query: '', filters: emptyFilters(), itemsTotal: 0, itemsCursor: null };
 const kinds = { note: '笔记', task: '任务', decision: '决策', message: '消息' };
 const statuses = { open: '待处理', in_progress: '进行中', done: '已完成', archived: '已归档' };
 const e = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -13,7 +13,7 @@ function toast(message, error = false) {
   clearTimeout(toastTimer); toastBox.textContent = message; toastBox.className = error ? 'error' : ''; toastBox.hidden = false;
   toastTimer = setTimeout(() => { toastBox.hidden = true; }, 6000);
 }
-const messages = { 'Username already exists': '用户名已被使用', 'Current password is incorrect': '当前密码不正确', 'Too many login attempts; try again in 15 minutes': '登录尝试过多，请在 15 分钟后重试', 'Credentials changed; refresh and retry': '登录信息已更改，请刷新后重试', 'Email already exists': '这个邮箱已经存在', 'Version conflict; read the item and retry': '信息已被其他协作者更新。请关闭编辑框、刷新后重新合并。', 'Invalid credentials': '登录凭据不正确', 'Invalid credentials; use an active user key': '请使用有效的用户 Key 登录，项目 Key 无法登录工作台', 'Read-only API key': '此 Key 只有只读权限', 'Same-origin request required': '请求来源不匹配，请从本站重新登录' };
+const messages = { 'Username already exists': '用户名已被使用', 'Current password is incorrect': '当前密码不正确', 'Too many login attempts; try again in 15 minutes': '登录尝试过多，请在 15 分钟后重试', 'Credentials changed; refresh and retry': '登录信息已更改，请刷新后重试', 'Email already exists': '这个邮箱已经存在', 'Version conflict; read the item and retry': '信息已被其他协作者更新。请关闭编辑框、刷新后重新合并。', 'Invalid credentials': '登录凭据不正确', 'Invalid credentials; use an active user key': '请使用有效的用户 Key 登录，项目 Key 无法登录工作台', 'Version conflict; read the row and retry': '记录已被其他协作者更新，请刷新后重新编辑', 'Table name already exists': '项目中已存在同名数据表', 'Read-only API key': '此 Key 只有只读权限', 'Same-origin request required': '请求来源不匹配，请从本站重新登录' };
 async function api(path, options = {}) {
   const headers = { ...options.headers };
   let body = options.body;
@@ -43,14 +43,24 @@ async function loadHome() {
   state.project = null; render();
 }
 async function loadProject(id, tab = 'overview') {
-  if (state.project?.id !== id) { state.filters = emptyFilters(); state.roles = []; }
+  if (state.project?.id !== id) { state.filters = emptyFilters(); state.roles = []; state.table = null; state.rows = []; }
   state.project = (await api('/api/v1/projects/' + encodeURIComponent(id))).data;
   state.tab = tab;
   if (tab === 'items' || tab === 'roles') state.roles = await all(base() + '/roles?include_archived=true');
   if (tab === 'items') await loadItems();
   if (tab === 'keys') state.keys = (await api('/api/v1/keys')).data.filter((k) => k.project_id === id);
   if (tab === 'files') state.files = await all(base() + '/attachments');
+  if (tab === 'tables') {
+    state.tables = await all(base() + '/tables');
+    if (state.table && state.tables.some((table) => table.id === state.table.id)) await loadTable(state.table.id);
+    else { state.table = null; state.rows = []; }
+  }
   render();
+}
+async function loadTable(id, append = false) {
+  const table = (await api(base() + '/tables/' + encodeURIComponent(id))).data;
+  const page = await api(base() + '/tables/' + encodeURIComponent(id) + '/rows?limit=50' + (append && state.rowsCursor ? '&after=' + encodeURIComponent(state.rowsCursor) : ''));
+  state.table = table; state.rows = append ? [...state.rows, ...page.data] : page.data; state.rowsCursor = page.next_cursor;
 }
 const splitTags = (value) => value.split(/\r?\n/).map((tag) => tag.trim()).filter(Boolean);
 function itemQuery() {
@@ -93,7 +103,11 @@ function projectsView() {
 }
 function projectView() {
   const p = state.project;
-  return `<button class="back" data-action="home">← 返回我的项目</button><div class="heading"><div><div class="eyebrow">Project workspace</div><h1>${e(p.name)}</h1><p>${e(p.description.slice(0, 160) || '项目协作空间')}</p></div><div class="actions"><button data-action="edit-project">编辑项目</button><button class="${p.archived_at ? '' : 'danger'}" data-action="archive-project">${p.archived_at ? '恢复项目' : '归档项目'}</button></div></div>${p.archived_at ? '<div class="archived-note">项目已归档，项目 AI Key 暂时无法访问。恢复项目后可继续协作；现有信息与附件会保留。</div>' : ''}<div class="tabs" role="tablist">${Object.entries({ overview: '项目概览', roles: '角色', items: '信息列表', keys: 'AI Key', files: '附件' }).map(([id, label]) => `<button role="tab" aria-selected="${state.tab === id}" class="${state.tab === id ? 'active' : ''}" data-action="tab" data-tab="${id}">${label}</button>`).join('')}</div>${state.tab === 'overview' ? overviewView() : state.tab === 'roles' ? rolesView() : state.tab === 'items' ? itemsView() : state.tab === 'keys' ? keysView() : filesView()}`;
+  return `<button class="back" data-action="home">← 返回我的项目</button><div class="heading"><div><div class="eyebrow">Project workspace</div><h1>${e(p.name)}</h1><p>${e(p.description.slice(0, 160) || '项目协作空间')}</p></div><div class="actions"><button data-action="edit-project">编辑项目</button><button class="${p.archived_at ? '' : 'danger'}" data-action="archive-project">${p.archived_at ? '恢复项目' : '归档项目'}</button></div></div>${p.archived_at ? '<div class="archived-note">项目已归档，项目 AI Key 暂时无法访问。恢复项目后可继续协作；现有信息与附件会保留。</div>' : ''}<div class="tabs" role="tablist">${Object.entries({ overview: '项目概览', roles: '角色', items: '信息列表', keys: 'AI Key', files: '附件', tables: '数据表' }).map(([id, label]) => `<button role="tab" aria-selected="${state.tab === id}" class="${state.tab === id ? 'active' : ''}" data-action="tab" data-tab="${id}">${label}</button>`).join('')}</div>${state.tab === 'overview' ? overviewView() : state.tab === 'roles' ? rolesView() : state.tab === 'items' ? itemsView() : state.tab === 'keys' ? keysView() : state.tab === 'tables' ? tablesView() : filesView()}`;
+}
+function tablesView() {
+  const table = state.table;
+  return `<div class="heading"><p>每张表保存独立的结构化记录，项目 AI 可按 Key 权限读写。</p><button class="primary" data-action="create-table">＋ 创建数据表</button></div><div class="grid">${state.tables.map((entry) => `<article class="card"><h2>${e(entry.name)}</h2><p>${e(entry.description || '项目数据表')}</p><p class="hint">${entry.columns.length} 个字段</p><div class="actions"><button data-action="open-table" data-id="${e(entry.id)}">查看记录</button><button data-action="edit-table" data-id="${e(entry.id)}">编辑</button><button class="danger" data-action="delete-table" data-id="${e(entry.id)}">删除</button></div></article>`).join('')}</div>${state.tables.length ? '' : empty('创建项目数据表', '例如客户、库存或实验结果。定义字段后，AI 可通过 REST 或 MCP 查询和更新记录。')}${table ? `<section class="card"><div class="heading"><div><h2>${e(table.name)}</h2><p class="hint">${table.columns.map((column) => `${e(column.name)} · ${e(column.type)}${column.required ? ' · 必填' : ''}`).join('；')}</p><p class="mono">${e(table.id)}</p></div><button class="primary" data-action="create-row">＋ 新增记录</button></div>${state.rows.map((row) => `<article class="card"><div class="mono">${e(row.id)} · 版本 ${e(row.version)}</div><pre class="prose">${e(JSON.stringify(row.values, null, 2))}</pre><div class="actions"><button data-action="edit-row" data-id="${e(row.id)}">编辑</button><button class="danger" data-action="delete-row" data-id="${e(row.id)}">删除</button></div></article>`).join('')}${state.rows.length ? '' : '<p class="hint">此表尚无记录。</p>'}${state.rowsCursor ? '<button data-action="more-rows">加载更多记录</button>' : ''}</section>` : ''}`;
 }
 function overviewView() {
   const p = state.project;
@@ -152,6 +166,29 @@ async function action(button) {
     case 'refresh': await loadProject(state.project.id, state.tab); break;
     case 'more-items': await loadItems(true); render(); break;
     case 'reset-filters': state.filters = emptyFilters(); await loadItems(); render(); break;
+    case 'create-table': case 'edit-table': {
+      const table = button.dataset.action === 'edit-table' ? state.tables.find((entry) => entry.id === id) : null;
+      modal(table ? '编辑数据表' : '创建数据表', field('表名称', 'name', table?.name, 'text', 100, true) + textField('说明', 'description', table?.description, 5000) + (table ? '<p class="hint">创建后字段定义固定，表名称和说明可修改。</p>' : textField('字段定义（JSON 数组）', 'columns', JSON.stringify([{ name: 'title', type: 'text', required: true }, { name: 'amount', type: 'real' }], null, 2), 12000) + '<p class="hint">字段名以英文字母开头，可含字母、数字、下划线。type 支持 text、integer、real、boolean、json；required 表示必填，最多 32 个字段。</p>'), 'table', table?.id); break;
+    }
+    case 'open-table': await loadTable(id); render(); break;
+    case 'more-rows': await loadTable(state.table.id, true); render(); break;
+    case 'delete-table': {
+      if (!confirm('永久删除这张数据表及全部记录？此操作不可恢复。')) break;
+      await api(base() + '/tables/' + id, { method: 'DELETE' });
+      if (state.table?.id === id) { state.table = null; state.rows = []; }
+      await loadProject(state.project.id, 'tables'); toast('数据表已删除'); break;
+    }
+    case 'create-row': case 'edit-row': {
+      const row = button.dataset.action === 'edit-row' ? state.rows.find((entry) => entry.id === id) : null;
+      const example = Object.fromEntries(state.table.columns.map((column) => [column.name, column.type === 'text' ? '' : column.type === 'boolean' ? false : column.type === 'json' ? {} : 0]));
+      modal(row ? '编辑记录' : '新增记录', textField('字段值（JSON 对象）', 'values', JSON.stringify(row?.values ?? example, null, 2), 100000) + '<p class="hint">字段名和类型必须与表定义一致，必填字段不可为 null。修改时校验版本，冲突后请刷新再重试。</p>', 'table-row', row?.id, row?.version); break;
+    }
+    case 'delete-row': {
+      if (!confirm('永久删除这条记录？')) break;
+      const row = state.rows.find((entry) => entry.id === id);
+      await api(base() + '/tables/' + state.table.id + '/rows/' + id, { method: 'DELETE', body: { version: row.version } });
+      await loadTable(state.table.id); render(); toast('记录已删除'); break;
+    }
     case 'create-role': case 'edit-role': {
       const role = button.dataset.action === 'edit-role' ? state.roles.find((r) => r.id === id) : {};
       modal(role.id ? '编辑角色' : '添加角色', field('角色名称', 'name', role.name, 'text', 100, true) + textField('角色职责', 'description', role.description, 2000), 'role', role.id); break;
@@ -262,6 +299,19 @@ document.addEventListener('submit', async (event) => {
         case 'project': {
           const result = await api('/api/v1/projects' + (id ? '/' + id : ''), { method: id ? 'PATCH' : 'POST', body: values });
           dialog.close(); await loadProject(result.data.id); toast(id ? '项目已更新' : '项目已创建'); break;
+        }
+        case 'table': {
+          if (!id) {
+            try { values.columns = JSON.parse(values.columns); } catch { throw new Error('字段定义必须是有效的 JSON 数组'); }
+          }
+          const result = await api(base() + '/tables' + (id ? '/' + id : ''), { method: id ? 'PATCH' : 'POST', body: values });
+          dialog.close(); await loadProject(state.project.id, 'tables'); await loadTable(result.data.id); render(); toast('数据表已保存'); break;
+        }
+        case 'table-row': {
+          try { values.values = JSON.parse(values.values); } catch { throw new Error('字段值必须是有效的 JSON 对象'); }
+          if (id) values.version = Number(form.dataset.version);
+          await api(base() + '/tables/' + state.table.id + '/rows' + (id ? '/' + id : ''), { method: id ? 'PATCH' : 'POST', body: values });
+          dialog.close(); await loadTable(state.table.id); render(); toast('记录已保存'); break;
         }
         case 'role': {
           await api(base() + '/roles' + (id ? '/' + id : ''), { method: id ? 'PATCH' : 'POST', body: values });

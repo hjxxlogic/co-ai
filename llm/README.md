@@ -54,15 +54,15 @@ ChatGPT、Grok 等 MCP connector 的服务器地址填写 `https://co-ai.xlogic.
 }
 ```
 
-工具结果包含 `structuredContent: {"status": 200, "body": {...}}`，保留 REST 状态码和响应正文；普通 REST 失败时 `isError: true`。缺少/无效认证返回 HTTP `401`，OAuth 权限不足返回 HTTP `403`，均提供 `WWW-Authenticate` 授权发现头和 `/llm` 文档入口，客户端可触发浏览器授权。工具目录和三个文档资源公开可读，不包含项目数据；实际数据操作沿用 REST 的认证、用户/项目隔离、只读权限和版本校验。
+工具结果包含 `structuredContent: {"status": 200, "body": {...}}`，保留 REST 状态码和响应正文；普通 REST 失败时 `isError: true`。缺少/无效认证返回 HTTP `401`，OAuth 权限不足返回 HTTP `403`，均提供 `WWW-Authenticate` 授权发现头和 `/llm` 文档入口，客户端可触发浏览器授权。MCP 初始化、工具目录和文档资源均要求有效认证；实际数据操作沿用 REST 的用户/项目隔离、只读权限和版本校验。直接访问 `/llm` 文档仍公开。
 
 附件上传工具使用 `content_base64`（标准带填充 Base64）、`filename`、`projectId` 和可选 `content_type`，解码后最大 10 MiB；下载的完整字节位于 `structuredContent.body.data.content_base64`。普通 JSON 写入仍受 REST 128 KiB 限制，MCP 请求总大小限制为 14 MiB。
 
-文档资源包括 `/llm/README.md`、`/llm/API.md`、`/llm/openapi.json`，通过 `resources/read` 读取列表中的完整 URI。Web 账号工具 `web_login`、`web_session`、`web_logout`、`web_set_credentials`、`web_reset_key` 保留原会话规则：写请求须携带与服务站点一致的 `Origin`，客户端需保存登录响应的 `Set-Cookie` 并在后续请求中发送 `Cookie`。API Key 或 Cookie MCP 请求如带 `Origin`，必须与服务站点一致；OAuth Bearer 请求支持客户端 Origin。
+文档资源包括 `/llm/README.md`、`/llm/API.md`、`/llm/openapi.json`，通过 `resources/read` 读取列表中的完整 URI。Web 账号工具 `web_login`、`web_session`、`web_logout`、`web_set_credentials`、`web_reset_key` 在 MCP 连接认证后保留原会话规则：首次获取会话可直接调用 HTTP `/api/web/login`；写请求须携带与服务站点一致的 `Origin`，客户端需保存登录响应的 `Set-Cookie` 并在后续请求中发送 `Cookie`。API Key 或 Cookie MCP 请求如带 `Origin`，必须与服务站点一致；OAuth Bearer 请求支持客户端 Origin。
 
 ## OAuth 浏览器授权
 
-REST API 和 MCP 均支持本站 OAuth 授权码流程，必须使用 S256 PKCE。API Key 仍可使用；OAuth 客户端无需获取用户的 API Key 或密码。支持 OAuth 的 MCP 客户端可只配置 `/mcp` 地址，访问受保护工具时根据 HTTP `401` 的 `WWW-Authenticate` 完成发现、客户端注册和浏览器授权。初始化、工具目录、健康检查和文档资源仍公开。
+REST API 和 MCP 均支持本站 OAuth 授权码流程，必须使用 S256 PKCE。API Key 仍可使用；OAuth 客户端无需获取用户的 API Key 或密码。支持 OAuth 的 MCP 客户端可只配置 `/mcp` 地址，连接时根据 HTTP `401` 的 `WWW-Authenticate` 完成发现、客户端注册和浏览器授权。未认证或凭据无效的 GET SSE、POST 初始化和工具目录请求均返回 `401`，不会先显示匿名连接成功。HTTP `/health`、`/llm` 文档和 OAuth 发现元数据仍公开。
 
 | 端点 | 用途 |
 | --- | --- |

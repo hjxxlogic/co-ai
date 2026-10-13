@@ -5,7 +5,8 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import { CfWorkerJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/cfworker';
 import { CallToolRequestSchema, ListToolsRequestSchema, ListResourcesRequestSchema, ReadResourceRequestSchema, McpError, ErrorCode, type CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { AppEnv, Env } from './types';
-import { csrfGuard } from './web-auth';
+import { csrfGuard, session, sessionPrincipal } from './web-auth';
+import { bearer, digest } from './security';
 import { restTools, type RestTool } from './mcp-tools';
 import { challenge, oauthIdentity, oauthContext, type OAuthIdentity, type OAuthEnv } from './oauth-security';
 
@@ -28,6 +29,22 @@ function base64(bytes: Uint8Array) {
     binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
   }
   return btoa(binary);
+}
+
+async function authenticateConnection(c: Context<AppEnv>, oauth: OAuthIdentity | null) {
+  if (oauth) return;
+  if (c.req.header('Authorization')) {
+    const hash = await digest(bearer(c));
+    if (c.env.ADMIN_TOKEN?.length >= 32 && hash === await digest(c.env.ADMIN_TOKEN)) return;
+    const key = await c.env.DB.prepare("SELECT k.id FROM api_keys k JOIN users u ON u.id = k.user_id WHERE k.key_hash = ? AND k.kind = 'api' AND k.revoked_at IS NULL AND u.disabled_at IS NULL")
+      .bind(hash).first();
+    if (key) return;
+  } else {
+    if (await sessionPrincipal(c)) return;
+    const current = await session(c);
+    if (current?.role === 'admin' && c.env.ADMIN_TOKEN?.length >= 32 && current.admin_hash === await digest(c.env.ADMIN_TOKEN)) return;
+  }
+  throw new HTTPException(401, { message: 'MCP authentication required' });
 }
 
 async function callRest(c: Context<AppEnv>, dispatch: Dispatch, entry: RestTool, args: Record<string, unknown>, cookies: Headers, oauth: OAuthIdentity | null, authFailure: (response: Response) => void): Promise<CallToolResult> {
@@ -105,7 +122,7 @@ export function mcpApi(dispatch: Dispatch) {
   const routes = new Hono<AppEnv>();
   routes.use('*', async (c, next) => {
     const origin = c.req.header('Origin');
-    if (origin && origin !== new URL(c.req.url).origin && !/^Bearer coao_/i.test(c.req.header('Authorization') ?? '')) throw new HTTPException(403, { message: 'Same-origin request required' });
+    if (origin && origin !== new URL(c.req.url).origin && (c.req.header('Authorization') || c.req.header('Cookie')) && !/^Bearer coao_/i.test(c.req.header('Authorization') ?? '')) throw new HTTPException(403, { message: 'Same-origin request required' });
     await next();
   });
   routes.use('*', csrfGuard);
@@ -114,6 +131,7 @@ export function mcpApi(dispatch: Dispatch) {
       return c.json({ jsonrpc: '2.0', id: null, error: { code: -32000, message: 'Method not allowed; use GET or POST' } }, 405, { Allow: 'GET, POST' });
     }
     const oauth = await oauthIdentity(c, 'mcp');
+    await authenticateConnection(c, oauth);
     let authenticationFailure: Response | undefined;
     const server = new Server({ name: 'co-ai', version: '0.3.0' }, {
       capabilities: { tools: {}, resources: {} },

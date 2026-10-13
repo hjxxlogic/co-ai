@@ -803,8 +803,8 @@ describe('MCP tools with real D1 and R2 bindings', () => {
     expect(changed.body.data.name).toBe('Renamed');
     expect((await mcpTool('get_api_admin_users', {}, mcpBearer(key))).status).toBe(401);
     const input = { body: { role: 'user', credential: key } };
-    expect((await mcpTool('web_login', input)).status).toBe(403);
-    const loggedIn = await mcpTool('web_login', input, { Origin: 'https://co-ai.test' });
+    expect((await mcpTool('web_login', input, mcpBearer(key))).status).toBe(403);
+    const loggedIn = await mcpTool('web_login', input, { ...mcpBearer(key), Origin: 'https://co-ai.test' });
     expect(loggedIn.status).toBe(200);
     const cookie = loggedIn.response.headers.get('Set-Cookie');
     expect(cookie).toContain('HttpOnly'); expect(cookie).toContain('Secure');
@@ -812,8 +812,9 @@ describe('MCP tools with real D1 and R2 bindings', () => {
     expect((await mcpTool('web_session', {}, sessionHeaders)).body.data.user.id).toBe(userId);
     expect((await mcpTool('get_api_v1_me', {}, sessionHeaders)).body.data.id).toBe(userId);
     expect((await mcpTool('web_set_credentials', { body: { username: 'mcp_login', password: 'mcp-password-12345' } }, sessionHeaders)).status).toBe(204);
-    expect((await mcpTool('web_reset_key', {}, sessionHeaders)).status).toBe(201);
-    const passwordLogin = await mcpTool('web_login', { body: { role: 'user', username: 'mcp_login', password: 'mcp-password-12345' } }, { Origin: 'https://co-ai.test' });
+    const reset = await mcpTool('web_reset_key', {}, sessionHeaders);
+    expect(reset.status).toBe(201);
+    const passwordLogin = await mcpTool('web_login', { body: { role: 'user', username: 'mcp_login', password: 'mcp-password-12345' } }, { ...mcpBearer(reset.body.data.api_key), Origin: 'https://co-ai.test' });
     const passwordCookie = passwordLogin.response.headers.get('Set-Cookie').split(';')[0];
     const logout = await mcpTool('web_logout', {}, { Cookie: passwordCookie, Origin: 'https://co-ai.test' });
     expect(logout.status).toBe(204);
@@ -862,6 +863,33 @@ async function oauthTokens(clientId: string, code: string, resource: string, ver
 }
 
 describe('OAuth authorization server and protected resources', () => {
+  it('validates MCP credentials before initialization and SSE, including revocation and disabled accounts', async () => {
+    const owner = await provision('mcp-handshake@test.com'), projectId = await createProject(owner);
+    const key = await projectKey(owner, projectId, 'read');
+    const connect = (token: string, method = 'POST') => app.request('https://co-ai.test/mcp', {
+      method, headers: { ...mcpBearer(token), 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
+      body: method === 'POST' ? JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'handshake-test', version: '1' } } }) : undefined,
+    }, env);
+    expect((await connect(key.api_key)).status).toBe(200);
+    const sse = await connect(key.api_key, 'GET');
+    expect(sse.status).toBe(200);
+    await sse.body!.cancel();
+    for (const token of ['invalid-key', 'coao_at_invalid', '']) {
+      for (const method of ['GET', 'POST']) {
+        const denied = await connect(token, method);
+        expect(denied.status).toBe(401);
+        expect(denied.headers.get('WWW-Authenticate')).toContain('oauth-protected-resource/mcp');
+      }
+    }
+    await request(`/api/v1/keys/${key.id}`, owner, 'DELETE');
+    expect((await connect(key.api_key)).status).toBe(401);
+    const me = await (await request('/api/v1/me', owner)).json() as any;
+    await request(`/api/admin/users/${me.data.id}`, admin, 'PATCH', { disabled: true });
+    expect((await connect(owner)).status).toBe(401);
+    expect((await request('/health')).status).toBe(200);
+    expect((await request('/llm')).status).toBe(200);
+  });
+
   it('discovers OAuth endpoints and challenges REST/MCP clients at HTTP level', async () => {
     const metadata = await (await request('/.well-known/oauth-authorization-server')).json() as any;
     expect(metadata.issuer).toBe('https://co-ai.test');
@@ -1064,8 +1092,7 @@ it('completes discovery, dynamic registration, PKCE and OAuth-authenticated MCP 
   const client = new Client({ name: 'oauth-sdk-test', version: '1' });
   const transport = new StreamableHTTPClientTransport(new URL('https://co-ai.test/mcp'), { authProvider: provider, fetch: fetchFn });
   try {
-    await client.connect(transport);
-    await expect(client.callTool({ name: 'get_api_v1_projects_projectId', arguments: { projectId } })).rejects.toThrow(UnauthorizedError);
+    await expect(client.connect(transport)).rejects.toThrow(UnauthorizedError);
     expect(authorizationUrl!.searchParams.get('resource')).toBe('https://co-ai.test/mcp');
     expect(authorizationUrl!.searchParams.get('scope')).toBe('read');
     const page = await app.request(authorizationUrl!.href, { headers: { Cookie: cookie } }, env);
@@ -1076,6 +1103,8 @@ it('completes discovery, dynamic registration, PKCE and OAuth-authenticated MCP 
     const redirect = new URL((await consent.json() as any).data.redirect);
     expect(redirect.searchParams.get('state')).toBe('sdk-state');
     await transport.finishAuth(redirect.searchParams.get('code')!);
+    await client.close();
+    await client.connect(new StreamableHTTPClientTransport(new URL('https://co-ai.test/mcp'), { authProvider: provider, fetch: fetchFn }));
     const result = await client.callTool({ name: 'get_api_v1_projects_projectId', arguments: { projectId } });
     expect(result.structuredContent).toMatchObject({ status: 200, body: { data: { id: projectId } } });
   } finally { await client.close(); }

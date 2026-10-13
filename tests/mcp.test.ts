@@ -6,8 +6,9 @@ import openapi from '../llm/openapi.json';
 import { restTools } from '../src/mcp-tools';
 import type { Env } from '../src/types';
 
-const env = { DOCS: { fetch: async () => new Response('Public API documentation') } } as unknown as Env;
-const rpcHeaders = { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' };
+const admin = 'protocol-test-admin-secret-at-least-32-characters';
+const env = { ADMIN_TOKEN: admin, DOCS: { fetch: async () => new Response('Public API documentation') } } as unknown as Env;
+const rpcHeaders = { Authorization: `Bearer ${admin}`, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' };
 async function rpc(message: unknown, headers: Record<string, string> = {}) {
   return app.request('https://co-ai.test/mcp', { method: 'POST', headers: { ...rpcHeaders, ...headers }, body: JSON.stringify(message) }, env);
 }
@@ -17,9 +18,25 @@ function call(name: string, args: Record<string, unknown> = {}) {
 }
 
 describe('MCP Streamable HTTP protocol', () => {
+  it('challenges anonymous initialization, discovery and SSE before connecting, including client Origins', async () => {
+    for (const method of ['GET', 'POST']) {
+      for (const origin of [undefined, 'https://grok.com', 'https://co-ai.test']) {
+        const response = await app.request('https://co-ai.test/mcp', {
+          method, headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', ...(origin ? { Origin: origin } : {}) },
+          body: method === 'POST' ? JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'Grok', version: '1' } } }) : undefined,
+        }, env);
+        expect(response.status).toBe(401);
+        expect(response.headers.get('WWW-Authenticate')).toContain('resource_metadata="https://co-ai.test/.well-known/oauth-protected-resource/mcp"');
+        expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
+      }
+    }
+    expect((await rpc({ jsonrpc: '2.0', id: 1, method: 'tools/list' }, { Authorization: '' })).status).toBe(401);
+  });
+
   it('connects an official MCP client and reads tools and documentation without server sessions', async () => {
     const client = new Client({ name: 'co-ai-test', version: '1.0.0' });
     const transport = new StreamableHTTPClientTransport(new URL('https://co-ai.test/mcp'), {
+      requestInit: { headers: { Authorization: `Bearer ${admin}` } },
       fetch: async (url, init) => app.request(String(url), init, env),
     });
     try {
@@ -65,7 +82,7 @@ describe('MCP Streamable HTTP protocol', () => {
   it('opens GET SSE with heartbeats, rotates idle streams and closes aborted connections', async () => {
     vi.useFakeTimers();
     try {
-      const response = await app.request('https://co-ai.test/mcp', { headers: { Accept: 'text/event-stream' } }, env);
+      const response = await app.request('https://co-ai.test/mcp', { headers: { Authorization: `Bearer ${admin}`, Accept: 'text/event-stream' } }, env);
       expect(response.status).toBe(200);
       expect(response.headers.get('Content-Type')).toBe('text/event-stream');
       expect(response.headers.get('Cache-Control')).toContain('no-transform');
@@ -79,14 +96,14 @@ describe('MCP Streamable HTTP protocol', () => {
       expect(vi.getTimerCount()).toBe(0);
 
       const abort = new AbortController();
-      const aborted = await app.request('https://co-ai.test/mcp', { signal: abort.signal, headers: { Accept: 'text/event-stream' } }, env);
+      const aborted = await app.request('https://co-ai.test/mcp', { signal: abort.signal, headers: { Authorization: `Bearer ${admin}`, Accept: 'text/event-stream' } }, env);
       const abortedReader = aborted.body!.getReader();
       await abortedReader.read();
       abort.abort();
       expect((await abortedReader.read()).done).toBe(true);
       expect(vi.getTimerCount()).toBe(0);
 
-      const cancelled = await app.request('https://co-ai.test/mcp', { headers: { Accept: 'text/event-stream' } }, env);
+      const cancelled = await app.request('https://co-ai.test/mcp', { headers: { Authorization: `Bearer ${admin}`, Accept: 'text/event-stream' } }, env);
       await cancelled.body!.cancel();
       expect(vi.getTimerCount()).toBe(0);
     } finally { vi.useRealTimers(); }
@@ -98,7 +115,7 @@ describe('MCP Streamable HTTP protocol', () => {
       [{ Accept: 'text/event-stream', 'MCP-Protocol-Version': 'invalid' }, 400],
       [{ Accept: 'text/event-stream', Origin: 'https://evil.test' }, 403],
     ] as [Record<string, string>, number][]) {
-      expect((await app.request('https://co-ai.test/mcp', { headers }, env)).status).toBe(status);
+      expect((await app.request('https://co-ai.test/mcp', { headers: { Authorization: `Bearer ${admin}`, ...headers } }, env)).status).toBe(status);
     }
   });
 
@@ -112,6 +129,7 @@ describe('MCP Streamable HTTP protocol', () => {
       fetch: async (url, init) => {
         const headers = new Headers(init?.headers);
         headers.set('Accept', 'text/event-stream, application/json');
+        headers.set('Authorization', `Bearer ${admin}`);
         return app.request(String(url), { ...init, headers }, env);
       },
     });

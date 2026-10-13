@@ -2950,6 +2950,135 @@
           }
         ]
       }
+    },
+    "/api/v1/projects/{projectId}/attachments/uploads": {
+      "post": {
+        "operationId": "createAttachmentUpload",
+        "summary": "Write permission: create a temporary single-use raw binary upload URL for one attachment (10 minutes, max 10 MiB). Use this for large files instead of passing Base64 through MCP. Requires a client that can HTTP PUT file bytes; an MCP conversation cannot upload a local file by path alone.",
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AttachmentUploadCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/AttachmentUpload"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error. 400 validation, 401 authentication, 403 permission, 404 scoped resource missing, 413 body size.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "426": {
+            "description": "HTTPS required."
+          }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "WebSession": []
+          },
+          {
+            "OAuth": [
+              "write"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/uploads/attachments/{token}": {
+      "put": {
+        "operationId": "putAttachmentUpload",
+        "x-mcp-tool": false,
+        "summary": "Upload complete raw binary bytes using the temporary capability URL. No Authorization or Cookie required. Not an MCP tool. Expires in 10 minutes; successful upload consumes the URL.",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^coau_[a-f0-9]{64}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary",
+                "description": "Complete raw bytes, max 10 MiB, using the Content-Type returned when creating the upload link. Not Base64, JSON or multipart."
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Attachment"
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "400 declared size mismatch; 404 expired, used, revoked or invalid link; 409 concurrent upload; 413 oversized; 415 content type mismatch; 500 storage failure."
+          },
+          "426": {
+            "description": "HTTPS required."
+          }
+        },
+        "security": []
+      }
     }
   },
   "components": {
@@ -3907,6 +4036,88 @@
           "updated_at"
         ],
         "additionalProperties": false
+      },
+      "AttachmentUploadCreate": {
+        "type": "object",
+        "properties": {
+          "filename": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "pattern": "^[^\\u0000-\\u001f\\u007f/\\\\]+$"
+          },
+          "content_type": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "default": "application/octet-stream"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10485760,
+            "description": "Exact raw file size in bytes, optional. If provided, upload must match."
+          }
+        },
+        "required": [
+          "filename"
+        ],
+        "additionalProperties": false
+      },
+      "AttachmentUpload": {
+        "type": "object",
+        "properties": {
+          "upload_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "PUT"
+            ]
+          },
+          "headers": {
+            "type": "object",
+            "properties": {
+              "Content-Type": {
+                "type": "string"
+              }
+            }
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "max_size": {
+            "type": "integer"
+          },
+          "expected_size": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "attachment_id": {
+            "type": "string"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "instructions": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "upload_url",
+          "method",
+          "headers",
+          "expires_at",
+          "max_size",
+          "attachment_id",
+          "filename",
+          "instructions"
+        ]
       }
     }
   }

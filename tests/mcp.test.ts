@@ -44,7 +44,7 @@ describe('MCP Streamable HTTP protocol', () => {
       expect(transport.sessionId).toBeUndefined();
       expect(client.getServerCapabilities()).toEqual({ tools: {}, resources: {} });
       const catalog = await client.listTools();
-      const operationIds = Object.values(openapi.paths).flatMap((operations) => Object.values(operations).map((operation) => operation.operationId));
+      const operationIds = Object.values(openapi.paths).flatMap((operations) => Object.values(operations).filter((operation) => !('x-mcp-tool' in operation && operation['x-mcp-tool'] === false)).map((operation) => operation.operationId));
       expect(catalog.tools.map((tool) => tool.name).sort()).toEqual(operationIds.sort());
       expect(new Set(catalog.tools.map((tool) => tool.name)).size).toBe(operationIds.length);
       const health = await client.callTool({ name: 'get_health', arguments: {} });
@@ -163,6 +163,10 @@ describe('MCP Streamable HTTP protocol', () => {
   });
 
   it('describes complete REST input schemas, binary transfers and destructive operations', () => {
+    const temporary = restTools.find((entry) => entry.tool.name === 'createAttachmentUpload')!;
+    expect(temporary.tool.inputSchema.required).toEqual(['projectId', 'body']);
+    expect(temporary.tool.inputSchema.properties).not.toHaveProperty('content_base64');
+    expect(restTools.some((entry) => entry.tool.name === 'putAttachmentUpload')).toBe(false);
     const list = restTools.find((entry) => entry.tool.name === 'get_api_v1_projects_projectId_items')!;
     expect(Object.keys(list.tool.inputSchema.properties!)).toEqual(expect.arrayContaining(['projectId', 'tag', 'recipient_role_id', 'updated_since', 'after', 'max_items']));
     expect(JSON.stringify(restTools.map((entry) => entry.tool.inputSchema))).not.toContain('"$ref"');

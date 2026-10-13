@@ -10,6 +10,7 @@ interface Parameter {
   schema: Schema;
 }
 interface Operation {
+  'x-mcp-tool'?: boolean;
   operationId: string;
   summary: string;
   parameters?: Parameter[];
@@ -41,7 +42,7 @@ function resolveSchema(value: unknown): unknown {
 }
 
 export const restTools: RestTool[] = Object.entries(openapi.paths).flatMap(([path, operations]) =>
-  Object.entries(operations).map(([method, value]) => {
+  Object.entries(operations).filter(([, value]) => (value as Operation)['x-mcp-tool'] !== false).map(([method, value]) => {
     const operation = value as Operation;
     const parameters = operation.parameters ?? [];
     const properties: Record<string, object> = {};
@@ -65,7 +66,7 @@ export const restTools: RestTool[] = Object.entries(openapi.paths).flatMap(([pat
       properties.content_type = { type: 'string', maxLength: 200, default: 'application/octet-stream' };
       required.push('content_base64');
     }
-    const description = `${operation.summary}. REST: ${method.toUpperCase()} ${path}. Same authentication and permissions as REST; pass credentials via HTTP Authorization/Cookie headers.${binaryDownload ? ' Returns file bytes as content_base64 in structuredContent.body.data.' : ''}`;
+    const description = `${operation.summary}. REST: ${method.toUpperCase()} ${path}. Same authentication and permissions as REST; pass credentials via HTTP Authorization/Cookie headers.${binaryUpload ? ' MCP input uses Base64; for large files use createAttachmentUpload and PUT raw bytes to its temporary upload_url from a file-capable HTTP client.' : ''}${binaryDownload ? ' Returns file bytes as content_base64 in structuredContent.body.data.' : ''}`;
     return {
       tool: {
         name: operation.operationId,

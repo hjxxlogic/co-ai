@@ -74,7 +74,7 @@ beforeAll(async () => {
   const bindings = await mf.getBindings();
   env = { ...bindings, ADMIN_TOKEN: admin, DOCS: { fetch: async (req: Request) => new Response(new URL(req.url).pathname.endsWith('.html') ? '<!doctype html><h1>AI docs</h1><a href="/llm/API.html">API</a>' : 'API docs', { headers: { 'Content-Type': new URL(req.url).pathname.endsWith('.html') ? 'text/html; charset=utf-8' : 'text/plain; charset=utf-8' } }) } } as unknown as Env;
   // D1 exec expects each statement on one line.
-  for (const file of ['0001_initial.sql', '0002_web_management.sql', '0003_roles_and_tags.sql', '0004_password_login.sql', '0005_recipient_roles.sql', '0006_oauth.sql', '0007_project_tables.sql']) {
+  for (const file of ['0001_initial.sql', '0002_web_management.sql', '0003_roles_and_tags.sql', '0004_password_login.sql', '0005_recipient_roles.sql', '0006_oauth.sql', '0007_project_tables.sql', '0008_attachment_uploads.sql']) {
     if (file === '0004_password_login.sql') {
       const time = '2025-01-01T00:00:00.000Z';
       await env.DB.batch([
@@ -709,6 +709,97 @@ async function mcpTool(name: string, args: Record<string, unknown> = {}, headers
 }
 
 const mcpBearer = (key: string) => ({ Authorization: `Bearer ${key}` });
+
+describe('temporary attachment upload capabilities', () => {
+  const createUpload = async (key: string, projectId: string, fields: Record<string, unknown> = {}) => {
+    const result = await request(`/api/v1/projects/${projectId}/attachments/uploads`, key, 'POST', { filename: 'recording.mp3', content_type: 'audio/mpeg', ...fields });
+    expect(result.status).toBe(201);
+    return (await result.json() as any).data;
+  };
+  const transfer = (ticket: any, bytes: Uint8Array, bindings = env, contentType = ticket.headers['Content-Type']) => app.request(ticket.upload_url, {
+    method: 'PUT', headers: { 'Content-Type': contentType, Origin: 'https://grok.com' }, body: bytes,
+  }, bindings);
+
+  it('creates links through MCP and uploads a 5.2 MB file without Base64 or Bearer credentials', async () => {
+    const owner = await provision('upload-mcp@test.com'), projectId = await createProject(owner);
+    const key = await projectKey(owner, projectId);
+    const bytes = new Uint8Array(5_200_000);
+    for (let i = 0; i < bytes.length; i++) bytes[i] = i % 251;
+    const created = await mcpTool('createAttachmentUpload', { projectId, body: { filename: 'recording.mp3', content_type: 'audio/mpeg', size: bytes.byteLength } }, mcpBearer(key.api_key));
+    expect(created.status).toBe(201);
+    const ticket = created.body.data;
+    expect(ticket.method).toBe('PUT'); expect(ticket.max_size).toBe(10 * 1024 * 1024);
+    expect(Date.parse(ticket.expires_at) - Date.now()).toBeLessThanOrEqual(600_000);
+    const token = new URL(ticket.upload_url).pathname.split('/').at(-1)!;
+    const row = await env.DB.prepare('SELECT token_hash FROM attachment_uploads WHERE attachment_id = ?').bind(ticket.attachment_id).first<{ token_hash: string }>();
+    expect(row!.token_hash).toBe(await digest(token)); expect(row!.token_hash).not.toBe(token);
+    const response = await transfer(ticket, bytes);
+    expect(response.status).toBe(201); expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
+    expect((await response.json() as any).data).toMatchObject({ id: ticket.attachment_id, filename: 'recording.mp3', size: bytes.length, created_by: key.id, content_type: 'audio/mpeg' });
+    const download = await request(`/api/v1/projects/${projectId}/attachments/${ticket.attachment_id}`, key.api_key);
+    expect(await crypto.subtle.digest('SHA-256', await download.arrayBuffer())).toEqual(await crypto.subtle.digest('SHA-256', bytes));
+    expect((await transfer(ticket, bytes)).status).toBe(404);
+    const stranger = await provision('upload-stranger@test.com');
+    expect((await request(`/api/v1/projects/${projectId}/attachments/${ticket.attachment_id}`, stranger)).status).toBe(404);
+    const options = await app.request(ticket.upload_url, { method: 'OPTIONS', headers: { Origin: 'https://grok.com' } }, env);
+    expect(options.status).toBe(204); expect(options.headers.get('Access-Control-Allow-Methods')).toContain('PUT');
+    expect((await app.request(ticket.upload_url.replace('https:', 'http:'), { method: 'PUT', body: bytes }, env)).status).toBe(426);
+  });
+
+  it('enforces write permission and project boundaries before issuing links', async () => {
+    const owner = await provision('upload-permissions@test.com'), projectId = await createProject(owner), other = await createProject(owner);
+    const read = await projectKey(owner, projectId, 'read'), write = await projectKey(owner, projectId);
+    expect((await request(`/api/v1/projects/${projectId}/attachments/uploads`, read.api_key, 'POST', { filename: 'file.bin' })).status).toBe(403);
+    expect((await request(`/api/v1/projects/${other}/attachments/uploads`, write.api_key, 'POST', { filename: 'file.bin' })).status).toBe(404);
+    for (const fields of [{ filename: '../file' }, { size: 10 * 1024 * 1024 + 1 }, { content_type: 'audio/mpeg\r\nX-Header: bad' }]) {
+      expect((await request(`/api/v1/projects/${projectId}/attachments/uploads`, write.api_key, 'POST', { filename: 'file.bin', ...fields })).status).toBe(400);
+    }
+    const cookie = await login('user', owner), clientId = await registerOAuth('Upload permission'), resource = 'https://co-ai.test/mcp';
+    const tokens = await oauthTokens(clientId, await approveOAuth(await startOAuth(clientId, cookie, resource, 'read'), cookie, projectId), resource);
+    const denied = await mcpTool('createAttachmentUpload', { projectId, body: { filename: 'file.bin' } }, mcpBearer(tokens.access_token));
+    expect(denied.status).toBe(403); expect(denied.response.headers.get('WWW-Authenticate')).toContain('scope="write"');
+  });
+
+  it('rejects expired, revoked, disabled and archived upload authorizations, including OAuth revocation', async () => {
+    const owner = await provision('upload-revocation@test.com'), projectId = await createProject(owner), key = await projectKey(owner, projectId);
+    const expired = await createUpload(key.api_key, projectId);
+    await env.DB.prepare('UPDATE attachment_uploads SET expires_at = ? WHERE attachment_id = ?').bind('2000-01-01T00:00:00Z', expired.attachment_id).run();
+    expect((await transfer(expired, new Uint8Array([1]))).status).toBe(404);
+    const revoked = await createUpload(key.api_key, projectId);
+    await request(`/api/v1/keys/${key.id}`, owner, 'DELETE');
+    expect((await transfer(revoked, new Uint8Array([1]))).status).toBe(404);
+    const archived = await createUpload(owner, projectId);
+    await request(`/api/v1/projects/${projectId}`, owner, 'PATCH', { archived: true });
+    expect((await transfer(archived, new Uint8Array([1]))).status).toBe(404);
+    await request(`/api/v1/projects/${projectId}`, owner, 'PATCH', { archived: false });
+    const cookie = await login('user', owner), clientId = await registerOAuth('Upload revocation'), resource = 'https://co-ai.test/mcp';
+    const tokens = await oauthTokens(clientId, await approveOAuth(await startOAuth(clientId, cookie, resource, 'write'), cookie, projectId), resource);
+    const oauthTicket = (await mcpTool('createAttachmentUpload', { projectId, body: { filename: 'file.bin' } }, mcpBearer(tokens.access_token))).body.data;
+    await oauthForm('/oauth/revoke', { client_id: clientId, token: tokens.access_token });
+    expect((await transfer(oauthTicket, new Uint8Array([1]))).status).toBe(404);
+    const disabled = await createUpload(owner, projectId);
+    const me = await (await request('/api/v1/me', owner)).json() as any;
+    await request(`/api/admin/users/${me.data.id}`, admin, 'PATCH', { disabled: true });
+    expect((await transfer(disabled, new Uint8Array([1]))).status).toBe(404);
+  });
+
+  it('allows retries after size or storage failures and consumes a link only once under concurrency', async () => {
+    const owner = await provision('upload-retries@test.com'), projectId = await createProject(owner);
+    const ticket = await createUpload(owner, projectId, { size: 3 });
+    expect((await transfer(ticket, new Uint8Array([1]), env, 'text/plain')).status).toBe(415);
+    expect((await transfer(ticket, new Uint8Array([1]))).status).toBe(400);
+    const failing = { ...env, FILES: { put: async () => { throw new Error('Simulated R2 failure'); } } as unknown as R2Bucket };
+    expect((await transfer(ticket, new Uint8Array([1, 2, 3]), failing)).status).toBe(500);
+    const responses = await Promise.all([transfer(ticket, new Uint8Array([1, 2, 3])), transfer(ticket, new Uint8Array([4, 5, 6]))]);
+    expect(responses.filter((response) => response.status === 201)).toHaveLength(1);
+    expect(responses.filter((response) => response.status === 404 || response.status === 409)).toHaveLength(1);
+    const count = await env.DB.prepare('SELECT COUNT(*) AS count FROM attachments WHERE id = ?').bind(ticket.attachment_id).first<{ count: number }>();
+    expect(count!.count).toBe(1);
+    const oversized = await createUpload(owner, projectId);
+    expect((await transfer(oversized, new Uint8Array(10 * 1024 * 1024 + 1))).status).toBe(413);
+    expect((await transfer(oversized, new Uint8Array())).status).toBe(201);
+  });
+});
 
 describe('MCP tools with real D1 and R2 bindings', () => {
   it('covers project, key, role and item workflows including filters, polling and version conflicts', async () => {

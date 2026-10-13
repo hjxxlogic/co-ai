@@ -42,7 +42,7 @@ ChatGPT、Grok 等 MCP connector 的服务器地址填写 `https://co-ai.xlogic.
 
 具体配置格式以客户端为准。AI 推荐使用项目 Key；用户 Key 用于用户自己的项目管理，管理员令牌用于用户管理。工具参数中无需再次传入 API Key。
 
-全部 42 个 REST 操作均有对应工具，名称为 [OpenAPI](./openapi.json) 中的 `operationId`。路径和查询参数直接作为工具参数，JSON 请求正文放入 `body`。例如创建项目消息：
+43 个 API 操作有对应 MCP 工具（临时链接的二进制 PUT 传输端点不作为 MCP 工具暴露），名称为 [OpenAPI](./openapi.json) 中的 `operationId`。路径和查询参数直接作为工具参数，JSON 请求正文放入 `body`。例如创建项目消息：
 
 ```json
 {
@@ -56,7 +56,23 @@ ChatGPT、Grok 等 MCP connector 的服务器地址填写 `https://co-ai.xlogic.
 
 工具结果包含 `structuredContent: {"status": 200, "body": {...}}`，保留 REST 状态码和响应正文；普通 REST 失败时 `isError: true`。缺少/无效认证返回 HTTP `401`，OAuth 权限不足返回 HTTP `403`，均提供 `WWW-Authenticate` 授权发现头和 `/llm` 文档入口，客户端可触发浏览器授权。MCP 初始化、工具目录和文档资源均要求有效认证；实际数据操作沿用 REST 的用户/项目隔离、只读权限和版本校验。直接访问 `/llm` 文档仍公开。
 
-附件上传工具使用 `content_base64`（标准带填充 Base64）、`filename`、`projectId` 和可选 `content_type`，解码后最大 10 MiB；下载的完整字节位于 `structuredContent.body.data.content_base64`。普通 JSON 写入仍受 REST 128 KiB 限制，MCP 请求总大小限制为 14 MiB。
+小附件上传工具使用 `content_base64`（标准带填充 Base64）、`filename`、`projectId` 和可选 `content_type`，解码后最大 10 MiB；下载的完整字节位于 `structuredContent.body.data.content_base64`。普通 JSON 写入仍受 REST 128 KiB 限制，MCP 请求总大小限制为 14 MiB。
+
+较大附件推荐先调用 `createAttachmentUpload`，仅传入 `projectId` 和 `body: {filename, content_type, size}`（size 为可选的精确字节数）。服务返回有效期 10 分钟的单次 `upload_url`、`method: "PUT"`、所需请求头和 `attachment_id`。由能读取完整文件并发送 HTTP 请求的执行环境，向该链接 PUT 原始二进制正文；无需传递 co-ai Key 或 OAuth 令牌，也无需公开源文件。成功响应为 `201` 和附件元数据，随后才能在笔记中关联附件 ID。不要将上传链接存入笔记或公开分享。链接仅允许上传固定附件，不能读取项目数据；凭据撤销、用户停用、密码修改、OAuth 授权撤销和项目归档均会使链接失效。失败后可在链接仍有效时重试；成功后再次使用会被拒绝。
+
+示例 MCP 参数：
+
+```json
+{"projectId":"<PROJECT_ID>","body":{"filename":"recording.mp3","content_type":"audio/mpeg","size":5200000}}
+```
+
+然后由文件执行环境调用：
+
+```sh
+curl -X PUT "$UPLOAD_URL" -H 'Content-Type: audio/mpeg' --data-binary @recording.mp3
+```
+
+MCP 连接器本身只传递 JSON 工具参数。如果 Grok 的文件环境不能发起 HTTP PUT，仅拿到链接仍无法自动上传；可由用户或其他可访问文件的 HTTP 客户端完成传输。不要把文件路径、Base64、JSON 或 multipart 当作二进制文件发送。
 
 文档资源包括 `/llm/README.md`、`/llm/API.md`、`/llm/openapi.json`，通过 `resources/read` 读取列表中的完整 URI。Web 账号工具 `web_login`、`web_session`、`web_logout`、`web_set_credentials`、`web_reset_key` 在 MCP 连接认证后保留原会话规则：首次获取会话可直接调用 HTTP `/api/web/login`；写请求须携带与服务站点一致的 `Origin`，客户端需保存登录响应的 `Set-Cookie` 并在后续请求中发送 `Cookie`。API Key 或 Cookie MCP 请求如带 `Origin`，必须与服务站点一致；OAuth Bearer 请求支持客户端 Origin。
 

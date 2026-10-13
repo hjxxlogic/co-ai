@@ -1,4 +1,5 @@
 import { projectTables } from './project-tables';
+import { attachmentUploads, uploadTransfer } from './attachment-uploads';
 import { Hono, type Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
@@ -42,7 +43,7 @@ app.use('*', async (c, next) => {
 });
 app.use('*', async (c, next) => {
   const path = c.req.path;
-  const resource = path.startsWith('/api/v1/') || path.startsWith('/api/admin/') || path === '/mcp' || path === '/mcp/';
+  const resource = path.startsWith('/api/v1/') || path.startsWith('/api/admin/') || path.startsWith('/api/uploads/attachments/') || path === '/mcp' || path === '/mcp/';
   if (path.startsWith('/.well-known/') || resource) {
     if (c.req.method === 'OPTIONS') {
       c.header('Access-Control-Allow-Origin', '*');
@@ -105,6 +106,7 @@ app.get('/llm/*', async (c) => {
 
 app.route('/api/web', webAuth);
 app.route('/api/admin', adminApi);
+app.route('/api/uploads/attachments', uploadTransfer);
 
 app.use('/api/v1/*', async (c, next) => {
   const oauth = await oauthIdentity(c, 'api');
@@ -198,6 +200,7 @@ project.get('/llm', async (c) => {
 });
 project.route('/roles', rolesApi);
 project.route('/items', itemsApi);
+project.route('/attachments/uploads', attachmentUploads);
 
 project.get('/attachments', async (c) => {
   const { limit, after } = pagination(c);

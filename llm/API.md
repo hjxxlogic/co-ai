@@ -12,7 +12,7 @@ OAuth 使用本站授权服务器的授权码 + S256 PKCE 流程，支持客户�
 
 ## MCP 接口
 
-`POST /mcp` 提供无状态 Streamable HTTP MCP 服务，覆盖本文和 OpenAPI 中全部 42 个 REST 操作。连接配置及附件、Web 会话说明见 [MCP 连接](./README.md#mcp-连接)。HTTP `/mcp` 请求返回 `426`，GET 支持 SSE 心跳流，POST 支持 JSON 或 SSE 格式响应，DELETE 返回 `405`；GET/POST 连接阶段即要求有效 OAuth Bearer、API Key、管理员令牌或 Web 会话，初始化及工具/文档资源发现也受保护；数据操作复用 REST 权限。HTTP `/llm` 文档与 OAuth 元数据仍公开。
+`POST /mcp` 提供无状态 Streamable HTTP MCP 服务，覆盖本文和 OpenAPI 中 43 个 API 操作；临时上传链接的二进制 PUT 传输不作为 MCP 工具暴露。连接配置及附件、Web 会话说明见 [MCP 连接](./README.md#mcp-连接)。HTTP `/mcp` 请求返回 `426`，GET 支持 SSE 心跳流，POST 支持 JSON 或 SSE 格式响应，DELETE 返回 `405`；GET/POST 连接阶段即要求有效 OAuth Bearer、API Key、管理员令牌或 Web 会话，初始化及工具/文档资源发现也受保护；数据操作复用 REST 权限。HTTP `/llm` 文档与 OAuth 元数据仍公开。
 
 工具名称等于 REST `operationId`，路径和查询参数放在 `arguments` 顶层，JSON 正文放在 `arguments.body`。例如更新信息使用 `patch_api_v1_projects_projectId_items_itemId`，参数为 `{"projectId":"...","itemId":"...","body":{"version":1,"status":"done"}}`；角色工具为 `listProjectRoles`、`createProjectRole`、`updateProjectRole`。重复 TAG 查询使用 `tag: ["api", "urgent"]`，布尔和整数查询参数使用 JSON 布尔和整数。
 
@@ -36,6 +36,7 @@ OAuth 使用本站授权服务器的授权码 + S256 PKCE 流程，支持客户�
 | DELETE | `P/items/{itemId}` | 条件软删除，JSON 为 `{"version":1}`，成功 `204` |
 | GET | `P/attachments` | 分页列出附件元数据 |
 | POST | `P/attachments?filename=...` | 原始二进制正文上传附件，返回 `201` |
+| POST | `P/attachments/uploads` | 写权限：创建 10 分钟有效的单次二进制上传链接，返回 `201` |
 | GET | `P/attachments/{attachmentId}` | 下载附件内容 |
 | DELETE | `P/attachments/{attachmentId}` | 删除附件，成功 `204` |
 
@@ -116,6 +117,10 @@ curl "$BASE_URL/api/v1/projects/$PROJECT_ID/attachments?filename=design.md" \
 ```
 
 返回元数据包括 `id`、`filename`、`content_type`、`size`（字节数）、`created_by`、`created_at`。附件链接为 `P/attachments/{id}`，需要鉴权；在信息正文中保存这个 ID 或相对链接即可关联。下载统一按二进制附件返回，不直接执行上传的 HTML 或脚本。
+
+大文件可先 `POST P/attachments/uploads`，JSON 正文 `{ "filename": "recording.mp3", "content_type": "audio/mpeg", "size": 5200000 }`，size 可省略但提供时必须匹配精确字节数。返回 `data.upload_url`、`method: "PUT"`、`headers`、`expires_at`、`max_size: 10485760` 和 `attachment_id`。然后 `PUT /api/uploads/attachments/{token}` 发送完整原始二进制文件，使用返回的 Content-Type，不发送 Authorization 或 Cookie。成功返回 `201` 和普通附件元数据，链接随即失效；失败可在有效期内重试。链接绑定项目、文件名和签发时的写权限，不是可用于其他接口的 API Key。签发凭据、用户、OAuth 授权或项目失效后拒绝上传。未使用链接 10 分钟后过期。
+
+上传返回 `400` 表示字节数不匹配，`404` 表示链接无效、过期、已成功使用或授权失效，`409` 表示并发上传冲突，`413` 表示超过 10 MiB，`415` 表示 Content-Type 与链接要求不符。URL 是短期上传凭据，应保密；不要存入项目内容。该能力不需要公开源文件，但发送文件的环境必须能够发起 HTTP PUT；仅有 MCP JSON 工具调用能力的客户端无法通过文件路径传输本地字节。
 
 ### 任务更新轮询
 

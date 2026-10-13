@@ -12,6 +12,9 @@ import { challenge, oauthIdentity, oauthContext, type OAuthIdentity, type OAuthE
 type Dispatch = (request: Request, env: Env) => Promise<Response>;
 const maxFileSize = 10 * 1024 * 1024;
 const validator = new CfWorkerJsonSchemaValidator();
+// GET streams carry no project data or cross-request notifications in this
+// stateless Worker. Rotate them periodically so idle transports are released.
+const sseLifetimeMs = 60_000;
 const tools = new Map(restTools.map((entry) => [entry.tool.name, { ...entry, validate: validator.getValidator(entry.tool.inputSchema) }]));
 const documentPaths = [
   { path: '/llm/README.md', name: 'AI operation guide', mimeType: 'text/plain' },
@@ -107,9 +110,8 @@ export function mcpApi(dispatch: Dispatch) {
   });
   routes.use('*', csrfGuard);
   routes.all('/', async (c) => {
-    // Stateless JSON responses need no standalone SSE stream or session deletion.
-    if (c.req.method !== 'POST') {
-      return c.json({ jsonrpc: '2.0', id: null, error: { code: -32000, message: 'Method not allowed; use POST' } }, 405, { Allow: 'POST' });
+    if (!['GET', 'POST'].includes(c.req.method)) {
+      return c.json({ jsonrpc: '2.0', id: null, error: { code: -32000, message: 'Method not allowed; use GET or POST' } }, 405, { Allow: 'GET, POST' });
     }
     const oauth = await oauthIdentity(c, 'mcp');
     let authenticationFailure: Response | undefined;
@@ -145,18 +147,66 @@ export function mcpApi(dispatch: Dispatch) {
       return { contents: [{ uri: document.uri, mimeType: document.mimeType, text: await response.text() }] };
     });
     const transport = new WebStandardStreamableHTTPServerTransport({
-      sessionIdGenerator: undefined, enableJsonResponse: true,
+      sessionIdGenerator: undefined,
+      enableJsonResponse: c.req.header('Accept')?.split(',')[0].trim() !== 'text/event-stream',
+      keepAliveMs: 15_000,
       maxRequestBodySize: 14 * 1024 * 1024,
     });
     await server.connect(transport);
+    let streaming = false;
     try {
       const response = await transport.handleRequest(c.req.raw);
+      if (c.req.method === 'GET' && response.ok && response.body) {
+        const reader = response.body.getReader();
+        const signal = c.req.raw.signal;
+        let timer: ReturnType<typeof setTimeout>;
+        let closed = false;
+        const close = async () => {
+          if (closed) return;
+          closed = true;
+          clearTimeout(timer);
+          signal.removeEventListener('abort', onAbort);
+          await server.close();
+        };
+        const onAbort = () => { void close(); };
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(': connected\nretry: 1000\n\n'));
+            timer = setTimeout(onAbort, sseLifetimeMs);
+            signal.addEventListener('abort', onAbort, { once: true });
+            if (signal.aborted) onAbort();
+          },
+          async pull(controller) {
+            try {
+              const chunk = await reader.read();
+              if (chunk.done) {
+                controller.close();
+                await close();
+              } else controller.enqueue(chunk.value);
+            } catch (error) {
+              controller.error(error);
+              await close();
+            }
+          },
+          async cancel() {
+            await reader.cancel();
+            await close();
+          },
+        });
+        streaming = true;
+        return new Response(stream, { status: response.status, headers: response.headers });
+      }
+      // A POST SSE response is finite. Wait for dispatch to finish before
+      // choosing its HTTP status, so OAuth failures remain HTTP 401/403 and
+      // cookies from login tools are included just as in JSON mode.
+      const responseBody = response.headers.get('Content-Type')?.startsWith('text/event-stream')
+        ? await response.text() : response.body;
       if (authenticationFailure) return authenticationFailure;
       const headers = new Headers(response.headers);
       for (const [name, value] of cookies) headers.append(name, value);
-      return new Response(response.body, { status: response.status, headers });
+      return new Response(responseBody, { status: response.status, headers });
     } finally {
-      await server.close();
+      if (!streaming) await server.close();
     }
   });
   return routes;

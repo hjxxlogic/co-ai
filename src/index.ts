@@ -38,7 +38,7 @@ app.use('*', async (c, next) => {
   if (!c.res.headers.has('Referrer-Policy')) c.header('Referrer-Policy', 'same-origin');
   c.header('Strict-Transport-Security', 'max-age=31536000');
   c.header('X-Content-Type-Options', 'nosniff');
-  c.header('Cache-Control', 'no-store');
+  c.header('Cache-Control', c.res.headers.get('Content-Type')?.startsWith('text/event-stream') ? 'no-store, no-transform' : 'no-store');
 });
 app.use('*', async (c, next) => {
   const path = c.req.path;

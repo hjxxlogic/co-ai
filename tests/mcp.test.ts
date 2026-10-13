@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import app from '../src/index';
@@ -45,10 +45,10 @@ describe('MCP Streamable HTTP protocol', () => {
     const insecure = await app.request('http://co-ai.test/mcp', { method: 'POST' }, env);
     expect(insecure.status).toBe(426);
     expect(insecure.headers.get('Location')).toBeNull();
-    for (const method of ['GET', 'DELETE', 'PUT']) {
+    for (const method of ['DELETE', 'PUT']) {
       const response = await app.request('https://co-ai.test/mcp', { method }, env);
       expect(response.status).toBe(405);
-      expect(response.headers.get('Allow')).toBe('POST');
+      expect(response.headers.get('Allow')).toBe('GET, POST');
     }
     expect((await rpc({ jsonrpc: '2.0', id: 1, method: 'ping' }, { Accept: 'application/json' })).status).toBe(406);
     expect((await rpc({ jsonrpc: '2.0', id: 1, method: 'ping' }, { 'MCP-Protocol-Version': 'invalid' })).status).toBe(400);
@@ -60,6 +60,66 @@ describe('MCP Streamable HTTP protocol', () => {
     expect((await rpc({ jsonrpc: '2.0', method: 'notifications/initialized' })).status).toBe(202);
     const ping = await rpc({ jsonrpc: '2.0', id: 0, method: 'ping' });
     expect(await ping.json()).toEqual({ jsonrpc: '2.0', id: 0, result: {} });
+  });
+
+  it('opens GET SSE with heartbeats, rotates idle streams and closes aborted connections', async () => {
+    vi.useFakeTimers();
+    try {
+      const response = await app.request('https://co-ai.test/mcp', { headers: { Accept: 'text/event-stream' } }, env);
+      expect(response.status).toBe(200);
+      expect(response.headers.get('Content-Type')).toBe('text/event-stream');
+      expect(response.headers.get('Cache-Control')).toContain('no-transform');
+      expect(response.headers.get('Mcp-Session-Id')).toBeNull();
+      const reader = response.body!.getReader();
+      expect(new TextDecoder().decode((await reader.read()).value)).toContain(': connected');
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(new TextDecoder().decode((await reader.read()).value)).toContain(':');
+      await vi.advanceTimersByTimeAsync(45_000);
+      while (!(await reader.read()).done) { /* Drain buffered heartbeats. */ }
+      expect(vi.getTimerCount()).toBe(0);
+
+      const abort = new AbortController();
+      const aborted = await app.request('https://co-ai.test/mcp', { signal: abort.signal, headers: { Accept: 'text/event-stream' } }, env);
+      const abortedReader = aborted.body!.getReader();
+      await abortedReader.read();
+      abort.abort();
+      expect((await abortedReader.read()).done).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+
+      const cancelled = await app.request('https://co-ai.test/mcp', { headers: { Accept: 'text/event-stream' } }, env);
+      await cancelled.body!.cancel();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('validates GET SSE negotiation, protocol versions and Origin', async () => {
+    for (const [headers, status] of [
+      [{ Accept: 'application/json' }, 406],
+      [{ Accept: 'text/event-stream', 'MCP-Protocol-Version': 'invalid' }, 400],
+      [{ Accept: 'text/event-stream', Origin: 'https://evil.test' }, 403],
+    ] as [Record<string, string>, number][]) {
+      expect((await app.request('https://co-ai.test/mcp', { headers }, env)).status).toBe(status);
+    }
+  });
+
+  it('returns POST results as SSE when listed first in Accept and works with the official client', async () => {
+    const response = await rpc({ jsonrpc: '2.0', id: 7, method: 'ping' }, { Accept: 'text/event-stream, application/json' });
+    expect(response.headers.get('Content-Type')).toBe('text/event-stream');
+    const data = (await response.text()).split('\n').find((line) => line.startsWith('data: '))!;
+    expect(JSON.parse(data.slice(6))).toEqual({ jsonrpc: '2.0', id: 7, result: {} });
+    const client = new Client({ name: 'sse-test', version: '1' });
+    const transport = new StreamableHTTPClientTransport(new URL('https://co-ai.test/mcp'), {
+      fetch: async (url, init) => {
+        const headers = new Headers(init?.headers);
+        headers.set('Accept', 'text/event-stream, application/json');
+        return app.request(String(url), { ...init, headers }, env);
+      },
+    });
+    try {
+      await client.connect(transport);
+      expect((await client.listTools()).tools.length).toBe(restTools.length);
+      expect((await client.callTool({ name: 'get_health', arguments: {} })).structuredContent).toEqual({ status: 200, body: { status: 'ok' } });
+    } finally { await client.close(); }
   });
 
   it('rejects malformed requests, unknown methods/tools, invalid inputs and resource URLs', async () => {

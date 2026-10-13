@@ -12,7 +12,7 @@ OAuth 使用本站授权服务器的授权码 + S256 PKCE 流程，支持客户�
 
 ## MCP 接口
 
-`POST /mcp` 提供无状态 Streamable HTTP MCP 服务，覆盖本文和 OpenAPI 中全部 42 个 REST 操作。连接配置及附件、Web 会话说明见 [MCP 连接](./README.md#mcp-连接)。HTTP `/mcp` 请求返回 `426`，GET/DELETE 返回 `405`；工具发现与文档资源公开，数据操作复用 REST 权限。
+`POST /mcp` 提供无状态 Streamable HTTP MCP 服务，覆盖本文和 OpenAPI 中全部 42 个 REST 操作。连接配置及附件、Web 会话说明见 [MCP 连接](./README.md#mcp-连接)。HTTP `/mcp` 请求返回 `426`，GET 支持 SSE 心跳流，POST 支持 JSON 或 SSE 格式响应，DELETE 返回 `405`；工具发现与文档资源公开，数据操作复用 REST 权限。
 
 工具名称等于 REST `operationId`，路径和查询参数放在 `arguments` 顶层，JSON 正文放在 `arguments.body`。例如更新信息使用 `patch_api_v1_projects_projectId_items_itemId`，参数为 `{"projectId":"...","itemId":"...","body":{"version":1,"status":"done"}}`；角色工具为 `listProjectRoles`、`createProjectRole`、`updateProjectRole`。重复 TAG 查询使用 `tag: ["api", "urgent"]`，布尔和整数查询参数使用 JSON 布尔和整数。
 

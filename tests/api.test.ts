@@ -932,6 +932,29 @@ describe('OAuth authorization server and protected resources', () => {
     expect((await mcpTool('get_health', {}, headers)).status).toBe(401);
   });
 
+  it('preserves OAuth challenges and authenticated tool results in POST SSE mode', async () => {
+    const owner = await provision('oauth-sse@test.com'), projectId = await createProject(owner);
+    const cookie = await login('user', owner), clientId = await registerOAuth('SSE OAuth'), resource = 'https://co-ai.test/mcp';
+    const tokens = await oauthTokens(clientId, await approveOAuth(await startOAuth(clientId, cookie, resource), cookie, projectId), resource);
+    const invoke = (name: string, args: Record<string, unknown>, token?: string) => app.request('https://co-ai.test/mcp', {
+      method: 'POST', headers: {
+        'Content-Type': 'application/json', Accept: 'text/event-stream, application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name, arguments: args } }),
+    }, env);
+    const denied = await invoke('get_api_v1_projects_projectId', { projectId });
+    expect(denied.status).toBe(401);
+    expect(denied.headers.get('WWW-Authenticate')).toContain('oauth-protected-resource/mcp');
+    const read = await invoke('get_api_v1_projects_projectId', { projectId }, tokens.access_token);
+    expect(read.headers.get('Content-Type')).toBe('text/event-stream');
+    const event = (await read.text()).split('\n').find((line) => line.startsWith('data: '))!;
+    expect(JSON.parse(event.slice(6)).result.structuredContent).toMatchObject({ status: 200, body: { data: { id: projectId } } });
+    const write = await invoke('post_api_v1_projects_projectId_items', { projectId, body: { title: 'Denied SSE write' } }, tokens.access_token);
+    expect(write.status).toBe(403);
+    expect(write.headers.get('WWW-Authenticate')).toContain('scope="write"');
+  });
+
   it('accepts ChatGPT all-scope MCP requests and grants only the consenting identity scopes', async () => {
     const owner = await provision('oauth-chatgpt@test.com'), cookie = await login('user', owner);
     const clientId = await registerOAuth('ChatGPT'), resource = 'https://co-ai.test/mcp';

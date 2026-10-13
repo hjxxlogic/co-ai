@@ -21,7 +21,11 @@ Authorization: Bearer <API_KEY>
 
 ## MCP 连接
 
-MCP 入口为 `https://co-ai.xlogic.cc/mcp`，使用 Streamable HTTP，支持 `initialize`、`ping`、`tools/list`、`tools/call`、`resources/list` 和 `resources/read`。服务无状态，POST 返回 JSON，不分配 MCP Session ID；GET SSE 和 DELETE 会话请求返回 `405`。客户端应按初始化响应协商协议版本，后续请求携带 `MCP-Protocol-Version`，并发送 `Accept: application/json, text/event-stream`。
+MCP 入口为 `https://co-ai.xlogic.cc/mcp`，使用 Streamable HTTP，支持 `initialize`、`ping`、`tools/list`、`tools/call`、`resources/list` 和 `resources/read`。服务无状态，不分配 MCP Session ID。POST 默认返回 JSON（`Accept: application/json, text/event-stream`）；将 `text/event-stream` 放在 Accept 首位（`Accept: text/event-stream, application/json`）可使用 SSE 格式响应。GET `/mcp` 携带 `Accept: text/event-stream` 可打开 SSE 连接，每 15 秒发送心跳注释，60 秒后关闭，客户端可重新连接；流中不包含项目数据，不提供跨请求通知或事件重放。DELETE 会话请求返回 `405`。这是 Streamable HTTP 的 SSE 支持，不提供旧版 HTTP+SSE 的 `endpoint` 事件和独立消息入口。客户端应按初始化响应协商协议版本，后续请求携带 `MCP-Protocol-Version`。
+
+ChatGPT、Grok 等 MCP connector 的服务器地址填写 `https://co-ai.xlogic.cc/mcp`，支持 OAuth 的客户端可通过浏览器登录授权。`/api/v1/projects/<PROJECT_ID>/llm` 是 REST 项目说明接口，不能作为 MCP connector 地址。项目 ID 作为工具参数传入；需要限制为单个项目时，可使用项目 Key，或在请求 `read` / `write` 的 OAuth 授权页选择项目。
+
+如果连接时出现 `invalid_scope` / `Scope does not match the resource`，请检查 connector 地址与授权请求的 `resource`、`scope`：MCP 使用 `/mcp` 资源，REST `/api/v1` 资源不接受 `admin` scope。修改服务器地址后重新发起授权。
 
 在支持远程 MCP 和自定义请求头的客户端中配置：
 

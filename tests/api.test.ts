@@ -80,7 +80,7 @@ beforeAll(async () => {
   const bindings = await mf.getBindings();
   env = { ...bindings, ADMIN_TOKEN: admin, DOCS: { fetch: async (req: Request) => new Response(new URL(req.url).pathname.endsWith('.html') ? '<!doctype html><h1>AI docs</h1><a href="/llm/API.html">API</a>' : 'API docs', { headers: { 'Content-Type': new URL(req.url).pathname.endsWith('.html') ? 'text/html; charset=utf-8' : 'text/plain; charset=utf-8' } }) } } as unknown as Env;
   // D1 exec expects each statement on one line.
-  for (const file of ['0001_initial.sql', '0002_web_management.sql', '0003_roles_and_tags.sql', '0004_password_login.sql', '0005_recipient_roles.sql', '0006_oauth.sql', '0007_project_tables.sql', '0008_attachment_uploads.sql', '0009_mcp_events.sql']) {
+  for (const file of ['0001_initial.sql', '0002_web_management.sql', '0003_roles_and_tags.sql', '0004_password_login.sql', '0005_recipient_roles.sql', '0006_oauth.sql', '0007_project_tables.sql', '0008_attachment_uploads.sql', '0009_mcp_events.sql', '0010_mcp_debug_logs.sql']) {
     if (file === '0004_password_login.sql') {
       const time = '2025-01-01T00:00:00.000Z';
       await env.DB.batch([

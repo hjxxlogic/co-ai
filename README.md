@@ -39,6 +39,26 @@ REST 和 MCP 也支持本站 OAuth 授权码 + S256 PKCE：客户端通过浏览
 
 MCP Events 支持按项目和收件角色订阅新消息，通过签名 Webhook 通知 ChatGPT；突发消息合并，每个订阅至少间隔 5 分钟发送。使用前应用 `migrations/0009_mcp_events.sql` 并部署带每分钟 Cron Trigger 的 Worker。MCP 2.0 客户端使用 `server/discover`，旧 MCP 客户端继续使用初始化流程。配置与使用见 [角色消息通知](llm/README.md#角色消息通知mcp-events)。
 
+## MCP 调试日志
+
+当前生产配置启用 `MCP_DEBUG_LOGS=true`，记录所有 `/mcp` 和 `/mcp/` 请求，包括认证失败、HTTP 拒绝、预检、JSON 以及 SSE 响应。响应头 `X-MCP-Request-Id` 与 Worker 控制台日志中的 `request_id` 对应。请求和响应头、脱敏后的请求正文、完整 JSON 响应或逐帧 SSE 数据保存在 D1 的 `mcp_debug_logs` / `mcp_debug_log_chunks`；正文按顺序分块存储，避免 Cloudflare 控制台长度限制。API Key、OAuth/会话凭据、密码、Webhook secret 和回调路径、Base64 文件内容不记录原值。无法安全解析的 JSON 只记录失败标记；单个方向超过 16 MiB 时明确标记省略，正常接口响应内容不截断。
+
+记录保留 24 小时，由每分钟 Cron 清理。SSE 不等待连接结束才返回，客户端取消时记录 `cancelled`；流错误记录 `stream_error`。D1 日志存储失败会输出 `mcp_debug_storage_failed`，不会使正常 API 操作失败。请求内容可能含项目数据，因此日志通过管理员 D1 权限查询，不作为用户 API 暴露。
+
+部署前应用 `migrations/0010_mcp_debug_logs.sql`。排查订阅时先查最近请求：
+
+```sh
+npx wrangler d1 execute DB --remote --command "SELECT id, datetime(created_at / 1000, 'unixepoch') AS created_at_utc, method, rpc_method, response_status, rpc_error_code, state FROM mcp_debug_logs ORDER BY created_at DESC LIMIT 20"
+```
+
+再使用请求 ID 查询正文，分别按 `direction` 和 `sequence` 顺序拼接 `content`：
+
+```sh
+npx wrangler d1 execute DB --remote --command "SELECT direction, sequence, content FROM mcp_debug_log_chunks WHERE log_id = '<REQUEST_ID>' ORDER BY direction, sequence"
+```
+
+Worker 控制台同步记录 `mcp_debug_request`、`mcp_debug_response` 和 `mcp_debug_completed` 摘要，可通过 `npx wrangler tail co-ai --format json` 实时查看。调试结束后将 `wrangler.jsonc` 中的 `MCP_DEBUG_LOGS` 改为 `false` 并重新部署；本地默认不开启，需在 `.dev.vars` 中设置 `MCP_DEBUG_LOGS=true`。
+
 ## 本地启动
 
 要求 Node.js 22.17+ 和 npm。Linux 本地运行还需要 glibc 2.35+（例如 Ubuntu 22.04+ 或 Debian 12）；老系统可使用 `node:22-bookworm-slim` 容器。

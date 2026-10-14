@@ -12,6 +12,7 @@ import { adminApi } from './admin';
 import { rolesApi } from './roles';
 import { itemsApi } from './items';
 import { mcpApi } from './mcp';
+import { mcpDebug, cleanupMcpDebugLogs } from './mcp-debug';
 import { challenge, oauthIdentity, requireOAuthScope, oauthContext, type OAuthEnv } from './oauth-security';
 import { oauthApi, oauthMetadata, protectedMetadata } from './oauth';
 
@@ -20,6 +21,7 @@ const now = () => new Date().toISOString();
 const name = z.string().trim().min(1).max(200);
 const projectFields = z.object({ name, description: z.string().max(10000), instructions: z.string().max(20000) }).strict();
 const projectSchema = projectFields.extend({ description: projectFields.shape.description.default(''), instructions: projectFields.shape.instructions.default('') });
+app.use('*', mcpDebug);
 app.use('*', async (c, next) => {
   if (new URL(c.req.url).protocol !== 'https:') {
     const url = new URL(c.req.url);
@@ -70,7 +72,7 @@ app.onError((error, c) => {
       : {};
     return c.json({ error: { code: error.status, message: error.message, ...documentation } }, error.status);
   }
-  // Do not log keys, request bodies, or database error messages.
+  // Unhandled errors log only the type; MCP debugging separately captures redacted bodies.
   console.error('Unhandled API error', error.name);
   return c.json({ error: { code: 500, message: 'Internal server error' } }, 500);
 });
@@ -254,5 +256,6 @@ app.route('/mcp', mcpApi(async (request, env) => app.request(request, undefined,
 export default Object.assign(app, {
   scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
     ctx.waitUntil(deliverMessageEvents(env));
+    ctx.waitUntil(cleanupMcpDebugLogs(env));
   },
 });

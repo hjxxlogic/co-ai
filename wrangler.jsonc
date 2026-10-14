@@ -8,6 +8,7 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-10-11",
   "compatibility_flags": ["nodejs_compat"],
+  "vars": { "MCP_DEBUG_LOGS": "true" },
   "triggers": { "crons": ["* * * * *"] },
   "d1_databases": [{
     "binding": "DB",

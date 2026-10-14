@@ -3,6 +3,7 @@ export interface Env {
   FILES: R2Bucket;
   DOCS: Fetcher;
   ADMIN_TOKEN: string;
+  MCP_DEBUG_LOGS?: string;
 }
 
 export interface Principal {

@@ -7,6 +7,8 @@
   "routes": [{ "pattern": "co-ai.xlogic.cc", "custom_domain": true }],
   "main": "src/index.ts",
   "compatibility_date": "2026-10-11",
+  "compatibility_flags": ["nodejs_compat"],
+  "triggers": { "crons": ["* * * * *"] },
   "d1_databases": [{
     "binding": "DB",
     "database_name": "co-ai",

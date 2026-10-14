@@ -3,7 +3,8 @@ import { attachmentUploads, uploadTransfer } from './attachment-uploads';
 import { Hono, type Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
-import type { AppEnv, Principal } from './types';
+import type { AppEnv, Env, Principal } from './types';
+import { deliverMessageEvents } from './mcp-events';
 import { bearer, digest, newKey, ownerOnly, writable } from './security';
 import { body, boundedBody, pagination } from './http';
 import { csrfGuard, sessionPrincipal, webAuth } from './web-auth';
@@ -250,4 +251,8 @@ project.delete('/attachments/:attachmentId', async (c) => {
 project.route('/tables', projectTables);
 app.route('/api/v1/projects/:projectId', project);
 app.route('/mcp', mcpApi(async (request, env) => app.request(request, undefined, env)));
-export default app;
+export default Object.assign(app, {
+  scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(deliverMessageEvents(env));
+  },
+});

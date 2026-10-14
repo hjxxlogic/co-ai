@@ -37,6 +37,8 @@
 
 REST 和 MCP 也支持本站 OAuth 授权码 + S256 PKCE：客户端通过浏览器登录、选择项目及权限，再用短期令牌调用对应资源。包含动态注册、MCP 授权发现、刷新令牌轮换和撤销。配置与协议说明见 [OAuth 浏览器授权](llm/README.md#oauth-浏览器授权)。启用前需应用 `migrations/0006_oauth.sql`；保留现有 API Key 和 Web 登录方式。
 
+MCP Events 支持按项目和收件角色订阅新消息，通过签名 Webhook 通知 ChatGPT；突发消息合并，每个订阅至少间隔 5 分钟发送。使用前应用 `migrations/0009_mcp_events.sql` 并部署带每分钟 Cron Trigger 的 Worker。MCP 2.0 客户端使用 `server/discover`，旧 MCP 客户端继续使用初始化流程。配置与使用见 [角色消息通知](llm/README.md#角色消息通知mcp-events)。
+
 ## 本地启动
 
 要求 Node.js 22.17+ 和 npm。Linux 本地运行还需要 glibc 2.35+（例如 Ubuntu 22.04+ 或 Debian 12）；老系统可使用 `node:22-bookworm-slim` 容器。

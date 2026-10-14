@@ -9,6 +9,9 @@ import { csrfGuard, session, sessionPrincipal } from './web-auth';
 import { bearer, digest } from './security';
 import { restTools, type RestTool } from './mcp-tools';
 import { challenge, oauthIdentity, oauthContext, type OAuthIdentity, type OAuthEnv } from './oauth-security';
+import { z } from 'zod';
+import { boundedBody } from './http';
+import { handleEventMethod } from './mcp-events';
 
 type Dispatch = (request: Request, env: Env) => Promise<Response>;
 const maxFileSize = 10 * 1024 * 1024;
@@ -132,6 +135,65 @@ export function mcpApi(dispatch: Dispatch) {
     }
     const oauth = await oauthIdentity(c, 'mcp');
     await authenticateConnection(c, oauth);
+    if (c.req.method === 'POST') {
+      let message: unknown;
+      try { message = JSON.parse(new TextDecoder().decode(await boundedBody(c.req.raw.clone(), 14 * 1024 * 1024))); }
+      catch (error) { if (error instanceof HTTPException) throw error; }
+      const request = z.object({ jsonrpc: z.literal('2.0'), id: z.union([z.string(), z.number()]), method: z.string(), params: z.record(z.string(), z.unknown()).optional() }).safeParse(message);
+      const meta = request.success ? request.data.params?._meta as Record<string, unknown> | undefined : undefined;
+      const modern = c.req.header('MCP-Protocol-Version') === '2026-07-28' || meta?.['io.modelcontextprotocol/protocolVersion'] === '2026-07-28';
+      const extension = request.success && (request.data.method === 'server/discover' || request.data.method.startsWith('events/'));
+      if (modern || extension) {
+        if (!c.req.header('Content-Type')?.toLowerCase().startsWith('application/json')) throw new HTTPException(415, { message: 'Content-Type must be application/json' });
+        if (!c.req.header('Accept')?.includes('application/json')) throw new HTTPException(406, { message: 'Accept must include application/json' });
+        if (!request.success) return c.json({ jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Invalid request' } }, 400);
+        const { id, method, params } = request.data;
+        const respond = (result: Record<string, unknown>, cookies?: Headers) => {
+          if (cookies) for (const [name, value] of cookies) c.header(name, value, { append: true });
+          return c.json({ jsonrpc: '2.0', id, result: { resultType: 'complete', ...result } });
+        };
+        try {
+          const version = c.req.header('MCP-Protocol-Version');
+          if ((version && version !== '2026-07-28') || (meta?.['io.modelcontextprotocol/protocolVersion'] && meta['io.modelcontextprotocol/protocolVersion'] !== '2026-07-28')) throw new McpError(ErrorCode.InvalidParams, 'Unsupported protocol version');
+          if (c.req.header('Mcp-Method') && c.req.header('Mcp-Method') !== method) throw new McpError(ErrorCode.InvalidParams, 'Mcp-Method does not match request');
+          if (method === 'server/discover') return respond({ supportedVersions: ['2026-07-28'], capabilities: { tools: {}, resources: {}, events: {} }, _meta: { 'io.modelcontextprotocol/serverInfo': { name: 'co-ai', version: '0.4.0' } }, ttlMs: 0, cacheScope: 'private' });
+          if (['events/list', 'events/subscribe', 'events/unsubscribe'].includes(method)) return respond(await handleEventMethod(c, oauth, method, params));
+          if (method === 'tools/list') {
+            if (params?.cursor) throw new McpError(ErrorCode.InvalidParams, 'Tool catalog has no pagination cursor');
+            return respond({ tools: restTools.map((entry) => entry.tool), ttlMs: 0, cacheScope: 'private' });
+          }
+          if (method === 'tools/call') {
+            const checkedRequest = CallToolRequestSchema.safeParse(request.data);
+            if (!checkedRequest.success || params?.task || params?.requestState || params?.inputResponses) throw new McpError(ErrorCode.InvalidParams, 'Invalid tool request');
+            const entry = tools.get(checkedRequest.data.params.name);
+            if (!entry) throw new McpError(ErrorCode.InvalidParams, 'Unknown tool');
+            if (c.req.header('Mcp-Name') && c.req.header('Mcp-Name') !== entry.tool.name) throw new McpError(ErrorCode.InvalidParams, 'Mcp-Name does not match request');
+            const args = checkedRequest.data.params.arguments ?? {};
+            if (!entry.validate(args).valid) throw new McpError(ErrorCode.InvalidParams, 'Invalid tool arguments');
+            const cookies = new Headers();
+            let failure: Response | undefined;
+            const result = await callRest(c, dispatch, entry, args, cookies, oauth, (response) => { failure = response; });
+            return failure ?? respond(result, cookies);
+          }
+          const documents = documentPaths.map(({ path, ...document }) => ({ ...document, uri: new URL(path, c.req.url).href }));
+          if (method === 'resources/list') {
+            if (params?.cursor) throw new McpError(ErrorCode.InvalidParams, 'Resource catalog has no pagination cursor');
+            return respond({ resources: documents, ttlMs: 0, cacheScope: 'private' });
+          }
+          if (method === 'resources/read') {
+            const document = documents.find((document) => document.uri === params?.uri);
+            if (!document) throw new McpError(ErrorCode.InvalidParams, 'Unknown documentation resource');
+            const response = await dispatch(new Request(document.uri), c.env);
+            if (!response.ok) throw new McpError(ErrorCode.InternalError, 'Documentation unavailable');
+            return respond({ contents: [{ uri: document.uri, mimeType: document.mimeType, text: await response.text() }], ttlMs: 0, cacheScope: 'private' });
+          }
+          throw new McpError(ErrorCode.MethodNotFound, 'Unknown method');
+        } catch (error) {
+          if (!(error instanceof McpError)) throw error;
+          return c.json({ jsonrpc: '2.0', id, error: { code: error.code, message: error.message, ...(error.data ? { data: error.data } : {}) } });
+        }
+      }
+    }
     let authenticationFailure: Response | undefined;
     const server = new Server({ name: 'co-ai', version: '0.3.0' }, {
       capabilities: { tools: {}, resources: {} },

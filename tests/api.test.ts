@@ -1,9 +1,15 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Miniflare } from 'miniflare';
 import { readFile } from 'node:fs/promises';
 import app from '../src/index';
 import type { Env } from '../src/types';
 import { digest } from '../src/security';
+import { deliverMessageEvents, signedHeaders } from '../src/mcp-events';
+import { webhookPost } from '../src/event-webhook';
+vi.mock('../src/event-webhook', async (original) => ({
+  ...await original<typeof import('../src/event-webhook')>(),
+  webhookPost: vi.fn(async (_url: string, body: string) => ({ status: 200, body: JSON.stringify({ challenge: JSON.parse(body).challenge }) })),
+}));
 import { UnauthorizedError, type OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -74,7 +80,7 @@ beforeAll(async () => {
   const bindings = await mf.getBindings();
   env = { ...bindings, ADMIN_TOKEN: admin, DOCS: { fetch: async (req: Request) => new Response(new URL(req.url).pathname.endsWith('.html') ? '<!doctype html><h1>AI docs</h1><a href="/llm/API.html">API</a>' : 'API docs', { headers: { 'Content-Type': new URL(req.url).pathname.endsWith('.html') ? 'text/html; charset=utf-8' : 'text/plain; charset=utf-8' } }) } } as unknown as Env;
   // D1 exec expects each statement on one line.
-  for (const file of ['0001_initial.sql', '0002_web_management.sql', '0003_roles_and_tags.sql', '0004_password_login.sql', '0005_recipient_roles.sql', '0006_oauth.sql', '0007_project_tables.sql', '0008_attachment_uploads.sql']) {
+  for (const file of ['0001_initial.sql', '0002_web_management.sql', '0003_roles_and_tags.sql', '0004_password_login.sql', '0005_recipient_roles.sql', '0006_oauth.sql', '0007_project_tables.sql', '0008_attachment_uploads.sql', '0009_mcp_events.sql']) {
     if (file === '0004_password_login.sql') {
       const time = '2025-01-01T00:00:00.000Z';
       await env.DB.batch([
@@ -89,6 +95,7 @@ beforeAll(async () => {
       for (const [table, id] of Object.entries(migrationIds)) migrationRows[table] = (await env.DB.prepare(`SELECT * FROM ${table} WHERE id = ?`).bind(id).first<Record<string, unknown>>())!;
     }
     const sql = await readFile(new URL('../migrations/' + file, import.meta.url), 'utf8');
+    if (file === '0009_mcp_events.sql') { await env.DB.exec(sql.replace(/\s+/g, ' ').trim()); continue; }
     await env.DB.exec(sql.replace(/^--.*$/gm, '').split(';').map((s) => s.replace(/\s+/g, ' ').trim()).filter(Boolean).join(';\n') + ';');
   }
 });
@@ -1357,5 +1364,138 @@ describe('Project D1 data tables', () => {
     expect((await mcpTool('deleteTableRow', { projectId, tableId, rowId, body: { version: 2 } }, headers)).status).toBe(204);
     expect((await mcpTool('updateProjectTable', { projectId, tableId, body: { description: 'Updated' } }, mcpBearer(management.access_token))).status).toBe(200);
     expect((await mcpTool('deleteProjectTable', { projectId, tableId }, mcpBearer(management.access_token))).status).toBe(204);
+  });
+});
+
+async function eventRpc(key: string, method: string, params: Record<string, unknown> = {}) {
+  const response = await app.request('https://co-ai.test/mcp', {
+    method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', Accept: 'application/json', 'MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': method },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+  }, env);
+  return { response, body: await response.json() as any };
+}
+const signingSecret = 'whsec_' + btoa('12345678901234567890123456789012');
+
+describe('MCP role message events', () => {
+  it('discovers MCP 2.0 events and tools, verifies subscriptions and enforces project boundaries', async () => {
+    const owner = await provision('events-boundaries@test.com'), projectId = await createProject(owner);
+    const role = await createRole(owner, projectId, 'Receiver'), otherProject = await createProject(owner);
+    const reader = (await projectKey(owner, projectId, 'read')).api_key;
+    const discover = await eventRpc(reader, 'server/discover');
+    expect(discover.body.result).toMatchObject({ resultType: 'complete', supportedVersions: ['2026-07-28'], capabilities: { events: {} } });
+    expect((await eventRpc(reader, 'events/list')).body.result.events[0].name).toBe('role.messages.received');
+    expect((await eventRpc(reader, 'tools/list')).body.result.tools.length).toBeGreaterThan(0);
+    expect((await eventRpc(reader, 'tools/call', { name: 'listProjectRoles', arguments: { projectId } })).body.result.structuredContent.body.data[0].id).toBe(role.id);
+    const params = { name: 'role.messages.received', arguments: { project_id: projectId, recipient_role_id: role.id }, delivery: { mode: 'webhook', url: 'https://receiver.example/events-boundaries', secret: signingSecret } };
+    vi.mocked(webhookPost).mockClear();
+    const subscribed = (await eventRpc(reader, 'events/subscribe', params)).body.result;
+    expect(subscribed.id).toMatch(/^sub_/);
+    expect(vi.mocked(webhookPost)).toHaveBeenCalledTimes(1);
+    const verification = vi.mocked(webhookPost).mock.calls[0];
+    expect(JSON.parse(verification[1]).type).toBe('verification');
+    expect(verification[2]['X-MCP-Subscription-Id']).toBe(subscribed.id);
+    expect(verification[2]['webhook-signature']).toMatch(/^v1,/);
+    const refreshed = await eventRpc(reader, 'events/subscribe', { ...params, arguments: { recipient_role_id: role.id, project_id: projectId }, ttlMs: 120_000 });
+    expect(refreshed.body.result.id).toBe(subscribed.id);
+    expect(Date.parse(refreshed.body.result.refreshBefore) - Date.now()).toBeLessThanOrEqual(120_000);
+    expect(vi.mocked(webhookPost)).toHaveBeenCalledTimes(1);
+    expect((await eventRpc(reader, 'events/subscribe', { ...params, arguments: { project_id: otherProject, recipient_role_id: role.id } })).body.error.code).toBe(-32024);
+    expect((await eventRpc(reader, 'events/subscribe', { ...params, delivery: { ...params.delivery, url: 'http://localhost/events' } })).body.error.code).toBe(-32602);
+    expect((await eventRpc(reader, 'events/subscribe', { ...params, delivery: { ...params.delivery, secret: 'whsec_YQ==' } })).body.error.code).toBe(-32602);
+    const unsubscribe = { ...params, delivery: { mode: 'webhook', url: params.delivery.url } };
+    expect((await eventRpc(owner, 'events/unsubscribe', unsubscribe)).body.result.resultType).toBe('complete');
+    expect(await env.DB.prepare('SELECT id FROM mcp_event_subscriptions WHERE id = ?').bind(subscribed.id).first()).not.toBeNull();
+    for (let i = 0; i < 2; i++) expect((await eventRpc(reader, 'events/unsubscribe', unsubscribe)).body.result.resultType).toBe('complete');
+    expect(await env.DB.prepare('SELECT id FROM mcp_event_subscriptions WHERE id = ?').bind(subscribed.id).first()).toBeNull();
+  });
+
+  it('coalesces matching messages, honors cooldown, preserves retries and stops after revocation', async () => {
+    const owner = await provision('events-delivery@test.com'), projectId = await createProject(owner);
+    const role = await createRole(owner, projectId, 'Receiver'), sender = await createRole(owner, projectId, 'Sender');
+    const key = await projectKey(owner, projectId);
+    const params = { name: 'role.messages.received', arguments: { project_id: projectId, recipient_role_id: role.id }, delivery: { mode: 'webhook', url: 'https://receiver.example/events-delivery', secret: signingSecret } };
+    const id = (await eventRpc(key.api_key, 'events/subscribe', params)).body.result.id;
+    const base = `/api/v1/projects/${projectId}/items`;
+    for (const input of [
+      { title: 'Note', kind: 'note' }, { title: 'Other recipient', kind: 'message', recipient_role_ids: [sender.id] },
+      { title: 'Self broadcast', kind: 'message', role_id: role.id },
+      { title: 'Direct', kind: 'message', recipient_role_ids: [role.id], role_id: sender.id },
+      { title: 'Broadcast', kind: 'message', recipient_role_ids: ['ALL'], role_id: sender.id },
+    ]) expect((await request(base, owner, 'POST', input)).status).toBe(201);
+    expect((await env.DB.prepare('SELECT pending_count FROM mcp_event_subscriptions WHERE id = ?').bind(id).first<any>()).pending_count).toBe(2);
+    vi.mocked(webhookPost).mockClear();
+    await deliverMessageEvents(env);
+    expect(vi.mocked(webhookPost)).not.toHaveBeenCalled();
+    await env.DB.prepare('UPDATE mcp_event_subscriptions SET next_attempt = 0 WHERE id = ?').bind(id).run();
+    vi.mocked(webhookPost).mockResolvedValueOnce({ status: 503, body: '' });
+    await Promise.all([deliverMessageEvents(env), deliverMessageEvents(env)]);
+    expect(vi.mocked(webhookPost)).toHaveBeenCalledTimes(1);
+    const failedBody = vi.mocked(webhookPost).mock.calls[0][1];
+    expect(JSON.parse(failedBody)).toMatchObject({ name: 'role.messages.received', cursor: null, data: { message_count: 2, recipient_role_id: role.id } });
+    await request(base, owner, 'POST', { title: 'During retry', kind: 'message' });
+    await deliverMessageEvents(env);
+    expect(vi.mocked(webhookPost)).toHaveBeenCalledTimes(1);
+    await env.DB.prepare('UPDATE mcp_event_subscriptions SET next_attempt = 0 WHERE id = ?').bind(id).run();
+    await deliverMessageEvents(env);
+    expect(vi.mocked(webhookPost).mock.calls[1][1]).toBe(failedBody);
+    const pending = await env.DB.prepare('SELECT pending_count, event_body, next_attempt FROM mcp_event_subscriptions WHERE id = ?').bind(id).first<any>();
+    expect(pending).toMatchObject({ pending_count: 1, event_body: null });
+    expect(pending.next_attempt - Date.now()).toBeGreaterThan(290_000);
+    await request(`/api/v1/keys/${key.id}`, owner, 'DELETE');
+    await env.DB.prepare('UPDATE mcp_event_subscriptions SET next_attempt = 0 WHERE id = ?').bind(id).run();
+    await deliverMessageEvents(env);
+    expect(vi.mocked(webhookPost)).toHaveBeenCalledTimes(2);
+    expect(await env.DB.prepare('SELECT id FROM mcp_event_subscriptions WHERE id = ?').bind(id).first()).toBeNull();
+  });
+
+  it('stops OAuth delivery after grant revocation and bounds transient and permanent failures', async () => {
+    const owner = await provision('events-oauth@test.com'), projectId = await createProject(owner), role = await createRole(owner, projectId, 'Receiver');
+    const cookie = await login('user', owner), clientId = await registerOAuth('Events'), resource = 'https://co-ai.test/mcp';
+    const tokens = await oauthTokens(clientId, await approveOAuth(await startOAuth(clientId, cookie, resource, 'read'), cookie, projectId), resource);
+    const params = { name: 'role.messages.received', arguments: { project_id: projectId, recipient_role_id: role.id }, delivery: { mode: 'webhook', url: 'https://receiver.example/events-oauth', secret: signingSecret } };
+    const id = (await eventRpc(tokens.access_token, 'events/subscribe', params)).body.result.id;
+    await request(`/api/v1/projects/${projectId}/items`, owner, 'POST', { title: 'Incoming', kind: 'message' });
+    await oauthForm('/oauth/revoke', { client_id: clientId, token: tokens.access_token });
+    vi.mocked(webhookPost).mockClear();
+    await env.DB.prepare('UPDATE mcp_event_subscriptions SET next_attempt = 0 WHERE id = ?').bind(id).run();
+    await deliverMessageEvents(env);
+    expect(webhookPost).not.toHaveBeenCalled();
+    expect(await env.DB.prepare('SELECT id FROM mcp_event_subscriptions WHERE id = ?').bind(id).first()).toBeNull();
+
+    const activeId = (await eventRpc(owner, 'events/subscribe', params)).body.result.id;
+    await request(`/api/v1/projects/${projectId}/items`, owner, 'POST', { title: 'Retry', kind: 'message' });
+    vi.mocked(webhookPost).mockClear();
+    for (let attempt = 0; attempt < 4; attempt++) {
+      await env.DB.prepare('UPDATE mcp_event_subscriptions SET next_attempt = 0 WHERE id = ?').bind(activeId).run();
+      vi.mocked(webhookPost).mockResolvedValueOnce({ status: 500, body: '' });
+      await deliverMessageEvents(env);
+    }
+    expect(webhookPost).toHaveBeenCalledTimes(4);
+    expect(new Set(vi.mocked(webhookPost).mock.calls.map((call) => JSON.parse(call[1]).eventId)).size).toBe(1);
+    expect((await env.DB.prepare('SELECT event_body, pending_count FROM mcp_event_subscriptions WHERE id = ?').bind(activeId).first<any>())).toMatchObject({ event_body: null, pending_count: 0 });
+    for (const status of [413, 410]) {
+      await request(`/api/v1/projects/${projectId}/items`, owner, 'POST', { title: 'Permanent failure', kind: 'message' });
+      await env.DB.prepare('UPDATE mcp_event_subscriptions SET next_attempt = 0 WHERE id = ?').bind(activeId).run();
+      vi.mocked(webhookPost).mockResolvedValueOnce({ status, body: '' });
+      await deliverMessageEvents(env);
+      await deliverMessageEvents(env);
+    }
+    expect(webhookPost).toHaveBeenCalledTimes(6);
+    expect(await env.DB.prepare('SELECT id FROM mcp_event_subscriptions WHERE id = ?').bind(activeId).first()).toBeNull();
+  });
+
+  it('rejects failed verification, rotates signatures and expires subscriptions', async () => {
+    const owner = await provision('events-refresh@test.com'), projectId = await createProject(owner), role = await createRole(owner, projectId, 'Receiver');
+    const params = { name: 'role.messages.received', arguments: { project_id: projectId, recipient_role_id: role.id }, delivery: { mode: 'webhook', url: 'https://receiver.example/events-refresh', secret: signingSecret } };
+    vi.mocked(webhookPost).mockResolvedValueOnce({ status: 200, body: '{"challenge":"wrong"}' });
+    expect((await eventRpc(owner, 'events/subscribe', params)).body.error).toMatchObject({ code: -32015, data: { reason: 'challenge_failed' } });
+    const id = (await eventRpc(owner, 'events/subscribe', params)).body.result.id;
+    const rotated = 'whsec_' + btoa('abcdefghijklmnopqrstuvwxyz123456');
+    expect((await eventRpc(owner, 'events/subscribe', { ...params, delivery: { ...params.delivery, secret: rotated } })).body.result.id).toBe(id);
+    const row = await env.DB.prepare('SELECT * FROM mcp_event_subscriptions WHERE id = ?').bind(id).first<any>();
+    expect((await signedHeaders(row, 'evt_test', '{}'))['webhook-signature'].split(' ')).toHaveLength(2);
+    await env.DB.prepare('UPDATE mcp_event_subscriptions SET expires_at = 0 WHERE id = ?').bind(id).run();
+    await deliverMessageEvents(env);
+    expect(await env.DB.prepare('SELECT id FROM mcp_event_subscriptions WHERE id = ?').bind(id).first()).toBeNull();
   });
 });

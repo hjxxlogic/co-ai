@@ -23,6 +23,38 @@ Authorization: Bearer <API_KEY>
 
 MCP 入口为 `https://co-ai.xlogic.cc/mcp`，使用 Streamable HTTP，支持 `initialize`、`ping`、`tools/list`、`tools/call`、`resources/list` 和 `resources/read`。服务无状态，不分配 MCP Session ID。POST 默认返回 JSON（`Accept: application/json, text/event-stream`）；将 `text/event-stream` 放在 Accept 首位（`Accept: text/event-stream, application/json`）可使用 SSE 格式响应。GET `/mcp` 携带 `Accept: text/event-stream` 可打开 SSE 连接，每 15 秒发送心跳注释，60 秒后关闭，客户端可重新连接；流中不包含项目数据，不提供跨请求通知或事件重放。DELETE 会话请求返回 `405`。这是 Streamable HTTP 的 SSE 支持，不提供旧版 HTTP+SSE 的 `endpoint` 事件和独立消息入口。客户端应按初始化响应协商协议版本，后续请求携带 `MCP-Protocol-Version`。
 
+MCP 2.0 客户端使用 `MCP-Protocol-Version: 2026-07-28`、`Accept: application/json`，无需初始化，直接调用 `server/discover`、工具、文档资源及事件方法。支持 MCP 1.x 的客户端继续使用上述初始化和 SSE 流程。
+
+### 角色消息通知（MCP Events）
+
+提供 `role.messages.received` 事件，订阅参数为 `project_id` 和 `recipient_role_id`（均为 UUID）。只统计新建的 `kind: message` 信息，收件人包含该角色或 `ALL` 时匹配；发送角色与订阅角色相同时不触发，以减少自触发循环。修改、删除信息以及 note/task/decision 不触发。角色是项目中的协作标签，订阅权限与项目读取权限一致，不额外建立角色身份或访问限制。
+
+通过 `events/list` 发现，通过 `events/subscribe` 创建或刷新，通过 `events/unsubscribe` 停止。示例：
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "events/subscribe",
+  "params": {
+    "name": "role.messages.received",
+    "arguments": { "project_id": "<PROJECT_UUID>", "recipient_role_id": "<ROLE_UUID>" },
+    "delivery": { "mode": "webhook", "url": "https://receiver.example/callback", "secret": "whsec_<BASE64_SIGNING_KEY>" },
+    "cursor": null
+  }
+}
+```
+
+`secret` 的 Base64 部分必须解码为 24–64 字节。服务器先发送签名 verification challenge，回调必须以 2xx JSON 原样回传 `challenge`。回调只允许 HTTPS/443、具有公网 IPv4 地址的域名；每次连接解析并固定地址、验证原域名的 TLS 证书，不跟随重定向。当前 Workers TCP 连接限制适用，IPv6-only 或 Cloudflare 代理的回调地址可能无法连接。失败返回 `-32015`，订阅不会激活。
+
+订阅由认证身份、回调 URL 和两个过滤参数确定；重复请求刷新同一订阅。默认和最长有效期为 24 小时；可用 `ttlMs` 请求较短有效期（最短 1 分钟），`ttlMs: null` 仍授予有限有效期。客户端应在 `refreshBefore` 前刷新。每个身份最多 20 个活跃订阅。`read` 项目 Key 和具有 read/write/manage scope 的 OAuth 身份均可订阅；管理员身份没有用户项目的订阅权限。发送前重新检查 Key、OAuth grant、用户、项目及角色；撤权、禁用或归档会停止发送。
+
+每分钟定时检查，首条消息等待至少 1 分钟以合并突发消息，每个订阅两次发送尝试间隔至少 5 分钟。合并通知的 `data` 包含 `project_id`、`recipient_role_id`、`message_count`、`first_message_id`、`last_message_id`、`first_received_at`、`last_received_at`，不携带正文。使用信息查询工具按角色和时间读取消息、分页到窗口结束；勿仅读取最后一条。待发消息计数与当前发送事件存储在 D1，不依赖 SSE 连接或 Worker 内存。
+
+Webhook 使用 Standard Webhooks HMAC-SHA256 签名；重试保持同一 `eventId` 和正文，更新签名时间。网络错误、408、429 和 5xx 最多尝试 4 次，间隔为 5、10、20 分钟。410 删除订阅，413 和其他永久失败不重试当前事件。接收端应按 `eventId` 去重。短期密钥轮换同时提供新旧签名。成功回调验证缓存 5 分钟。无协议事件重放，`cursor` 始终为 null；过期、退订或重试耗尽的事件不会补发，必要时通过信息工具补查。
+
+在支持 MCP Events 的 ChatGPT Work/Cloud 聊天或 dots 中重新扫描插件，再要求其监控指定项目角色。普通 MCP connector 是否接收事件取决于客户端能力，GET SSE 不承载这些 Webhook 通知。参考 [OpenAI MCP Events](https://developers.openai.com/plugins/build/mcp-events)。
+
 ChatGPT、Grok 等 MCP connector 的服务器地址填写 `https://co-ai.xlogic.cc/mcp`，支持 OAuth 的客户端可通过浏览器登录授权。`/api/v1/projects/<PROJECT_ID>/llm` 是 REST 项目说明接口，不能作为 MCP connector 地址。项目 ID 作为工具参数传入；需要限制为单个项目时，可使用项目 Key，或在请求 `read` / `write` 的 OAuth 授权页选择项目。
 
 如果连接时出现 `invalid_scope` / `Scope does not match the resource`，请检查 connector 地址与授权请求的 `resource`、`scope`：MCP 使用 `/mcp` 资源，REST `/api/v1` 资源不接受 `admin` scope。修改服务器地址后重新发起授权。

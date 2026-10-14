@@ -14,6 +14,8 @@ OAuth 使用本站授权服务器的授权码 + S256 PKCE 流程，支持客户�
 
 `POST /mcp` 提供无状态 Streamable HTTP MCP 服务，覆盖本文和 OpenAPI 中 43 个 API 操作；临时上传链接的二进制 PUT 传输不作为 MCP 工具暴露。连接配置及附件、Web 会话说明见 [MCP 连接](./README.md#mcp-连接)。HTTP `/mcp` 请求返回 `426`，GET 支持 SSE 心跳流，POST 支持 JSON 或 SSE 格式响应，DELETE 返回 `405`；GET/POST 连接阶段即要求有效 OAuth Bearer、API Key、管理员令牌或 Web 会话，初始化及工具/文档资源发现也受保护；数据操作复用 REST 权限。HTTP `/llm` 文档与 OAuth 元数据仍公开。
 
+MCP 2.0（`2026-07-28`）支持无初始化的 `server/discover`、工具和资源请求，响应带 `resultType: complete`；使用 JSON 响应及 `Accept: application/json`。同一认证端点提供 `events/list`、`events/subscribe`、`events/unsubscribe`，通过签名 Webhook 投递 `role.messages.received`。按项目和收件角色过滤、合并通知、5 分钟发送间隔及订阅生命周期详见 [角色消息通知](./README.md#角色消息通知mcp-events)。事件订阅不属于 REST 工具目录。
+
 工具名称等于 REST `operationId`，路径和查询参数放在 `arguments` 顶层，JSON 正文放在 `arguments.body`。例如更新信息使用 `patch_api_v1_projects_projectId_items_itemId`，参数为 `{"projectId":"...","itemId":"...","body":{"version":1,"status":"done"}}`；角色工具为 `listProjectRoles`、`createProjectRole`、`updateProjectRole`。重复 TAG 查询使用 `tag: ["api", "urgent"]`，布尔和整数查询参数使用 JSON 布尔和整数。
 
 普通成功与失败结果提供 `structuredContent.status` 和 `structuredContent.body`；REST 失败设置 `isError: true`。认证失败直接返回 HTTP `401`，OAuth 权限不足直接返回 HTTP `403`，并带 MCP 资源的 `WWW-Authenticate` 授权发现头。未知工具、未知参数、错误参数类型等协议错误返回 JSON-RPC `-32602`。无正文的 `204` 操作返回 `body: null`。附件下载返回 Base64 字节和内容类型、下载文件名头、ETag，均在 `body.data` 内。

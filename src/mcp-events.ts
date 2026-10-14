@@ -106,6 +106,14 @@ export async function handleEventMethod(c: Context<AppEnv>, oauth: OAuthIdentity
       const echoed = JSON.parse(response.body) as { challenge?: unknown };
       if (response.status < 200 || response.status >= 300 || typeof echoed.challenge !== 'string' || !timingSafeEqual(new TextEncoder().encode(await digest(echoed.challenge)), new TextEncoder().encode(await digest(challenge)))) throw new Error();
     } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      const category = /timeout/i.test(message) ? 'timeout'
+        : /not public|address|private/i.test(message) ? 'address_rejected'
+        : /ALPNProtocols|not implemented/i.test(message) ? 'unsupported_runtime_option'
+        : /ENOTFOUND|ENODATA|DNS/i.test(message) ? 'dns_failed'
+        : /socket|connect|TLS|certificate/i.test(message) ? 'transport_failed' : 'challenge_failed';
+      // Log categories only: callback URLs, challenges and signing keys are private.
+      console.warn(JSON.stringify({ event: 'mcp_event_callback_verification_failed', category }));
       throw new McpError(-32015, 'Callback verification failed', { reason: error instanceof Error && /timeout/i.test(error.message) ? 'timeout' : 'challenge_failed' });
     }
   }

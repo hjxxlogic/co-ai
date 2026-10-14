@@ -157,7 +157,12 @@ export function mcpApi(dispatch: Dispatch) {
           if ((version && version !== '2026-07-28') || (meta?.['io.modelcontextprotocol/protocolVersion'] && meta['io.modelcontextprotocol/protocolVersion'] !== '2026-07-28')) throw new McpError(ErrorCode.InvalidParams, 'Unsupported protocol version');
           if (c.req.header('Mcp-Method') && c.req.header('Mcp-Method') !== method) throw new McpError(ErrorCode.InvalidParams, 'Mcp-Method does not match request');
           if (method === 'server/discover') return respond({ supportedVersions: ['2026-07-28'], capabilities: { tools: {}, resources: {}, events: {} }, _meta: { 'io.modelcontextprotocol/serverInfo': { name: 'co-ai', version: '0.4.0' } }, ttlMs: 0, cacheScope: 'private' });
-          if (['events/list', 'events/subscribe', 'events/unsubscribe'].includes(method)) return respond(await handleEventMethod(c, oauth, method, params));
+          if (['events/list', 'events/subscribe', 'events/unsubscribe'].includes(method)) {
+            if (method !== 'events/list') console.info(JSON.stringify({ event: 'mcp_event_request_received', method }));
+            const result = await handleEventMethod(c, oauth, method, params);
+            if (method !== 'events/list') console.info(JSON.stringify({ event: 'mcp_event_request_completed', method }));
+            return respond(result);
+          }
           if (method === 'tools/list') {
             if (params?.cursor) throw new McpError(ErrorCode.InvalidParams, 'Tool catalog has no pagination cursor');
             return respond({ tools: restTools.map((entry) => entry.tool), ttlMs: 0, cacheScope: 'private' });
@@ -190,6 +195,7 @@ export function mcpApi(dispatch: Dispatch) {
           throw new McpError(ErrorCode.MethodNotFound, 'Unknown method');
         } catch (error) {
           if (!(error instanceof McpError)) throw error;
+          if (method.startsWith('events/')) console.warn(JSON.stringify({ event: 'mcp_event_request_failed', method, code: error.code }));
           return c.json({ jsonrpc: '2.0', id, error: { code: error.code, message: error.message, ...(error.data ? { data: error.data } : {}) } });
         }
       }

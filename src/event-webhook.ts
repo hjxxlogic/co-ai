@@ -15,6 +15,11 @@ export function publicIpv4(address: string) {
   return !(a === 0 || a === 10 || a === 127 || a >= 224 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && (b === 168 || b === 0 || (b === 2 && c === 0))) || (a === 198 && (b === 18 || b === 19 || (b === 51 && c === 100))) || (a === 203 && b === 0 && c === 113));
 }
 
+export function webhookTlsOptions(hostname: string, address: string) {
+  // Workers rejects ALPNProtocols. Its TLS socket uses HTTP/1.1 without ALPN.
+  return { host: address, port: 443, servername: hostname, rejectUnauthorized: true };
+}
+
 // Resolve on every connection and pin the validated IP. TLS still verifies
 // the callback hostname. A plain fetch after DNS validation could re-resolve it.
 export async function webhookPost(value: string, body: string, headers: Record<string, string>): Promise<{ status: number; body: string }> {
@@ -26,7 +31,7 @@ export async function webhookPost(value: string, body: string, headers: Record<s
   ]).finally(() => clearTimeout(dnsTimer));
   if (!addresses.length || addresses.some((address) => !publicIpv4(address))) throw new Error('Callback address is not public');
   return new Promise((resolve, reject) => {
-    const socket = connect({ host: addresses[0], port: 443, servername: url.hostname, rejectUnauthorized: true, ALPNProtocols: ['http/1.1'] });
+    const socket = connect(webhookTlsOptions(url.hostname, addresses[0]));
     const chunks: Buffer[] = [];
     let size = 0;
     const timer = setTimeout(() => socket.destroy(new Error('Callback timeout')), 10_000);

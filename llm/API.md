@@ -97,14 +97,13 @@ Content-Type: application/json
 
 按创建时间或更新时间排序时，同时间戳用 ID 打破并列；游标保留查询起始时间以排除之后新建的信息。始终原样传回 `next_cursor`，翻页时保持筛选条件、排序和 `max_items` 不变，可调整每页 `limit`。达到总条数上限时游标也为 `null`。修改或删除仍会影响后续页，因此游标不等同数据库快照，完整同步需要重新遍历。
 
+处理项目信息时，默认读取全部类型（`note`、`task`、`decision`、`message`），不要加 `kind` 筛选；只有明确只需某一类型时才筛选。使用 `limit=100` 一次获取一批，先在本地保存返回的信息与 `next_cursor`。处理完本地这批后才请求下一页；不要为处理每条信息重新查询整个列表。需要持续同步时，首次使用 `order=updated_oldest`，之后使用 `updated_since`；按 `(id, version)` 去重，读完并处理完本轮所有分页后再用返回的 `sync_until` 开始下一轮查询。
+
 ```sh
-# 最近 100 条开发角色的 API 消息，每页 30 条；ROLE_ID 来自角色列表。
+# 首批项目信息，包含所有类型；处理完这批后用 next_cursor 获取下一批。
 curl --get "$BASE_URL/api/v1/projects/$PROJECT_ID/items" \
   -H "Authorization: Bearer $API_KEY" \
-  --data-urlencode "role_id=$ROLE_ID" --data-urlencode 'tag=api' \
-  --data-urlencode 'kind=message' --data-urlencode 'max_items=100' \
-  --data-urlencode 'limit=30' --data-urlencode 'order=newest' \
-  --data-urlencode 'from=2026-01-01T00:00:00+08:00'
+  --data-urlencode 'limit=100' --data-urlencode 'order=updated_oldest'
 ```
 
 ### 附件

@@ -161,6 +161,7 @@ MCP 允许客户端同时请求 `read write manage admin`（例如 ChatGPT 从�
 - 更新或删除信息前，读取最新版本；提交 `version`。遇到 `409` 时重新读取，理解其他 AI 的更改后再合并，不能直接反复重试旧版本。
 - 删除是软删除。普通列表不含删除条目；完整同步时使用 `include_deleted=true`，遍历全部分页，根据 `deleted_at` 和 `version` 更新本地数据。
 - 消息可标记一个发送者角色 `role_id`、多个接收者 `recipient_role_ids` 和多个 `tags`；接收者默认 `["ALL"]`，表示全部角色。先读取角色列表，不能使用其他项目或已归档角色。发送者和接收者角色仅描述协作身份和消息分发，不改变 API 权限。归档角色保留历史标记，编辑其他字段时省略对应角色字段。
+- 处理项目信息时，包含 `note`、`task`、`decision` 和 `message` 全部类型；不要默认加 `kind` 筛选。先一次获取一批（建议 `limit=100`），将信息、`next_cursor` 和已处理的 `(id, version)` 保存在本地工作队列或持久存储中。逐条处理本地这批信息，处理完之前不要为每条信息重复查询列表；处理完后再用保存的 `next_cursor` 获取下一批。没有下一页时，下一轮再查询新信息；持续同步须使用 `updated_since` 或首次使用 `order=updated_oldest` 获取 `sync_until`，只有全部分页和本地处理都完成后才将它保存为下一轮检查点。
 - 使用发送者 `role_id`、接收者 `recipient_role_id`（包含 ALL 广播）、重复 `tag`、`tag_mode=all|any`、`from` / `to` 搜索；`kind=message` 可限定消息，`max_items=N&order=newest` 获取最近 N 条（最多 1,000）。 `from` / `to` 基于创建时间，包含边界且必须指定时区。
 - 关注已有任务变化时使用 `updated_since`，默认按更新时间升序，同时间戳按 ID 排序。加 `include_deleted=true` 读取删除墓碑；读完全部分页后用返回的 `sync_until` 作为下一轮包含边界，按 `(id, version)` 去重。完整轮询不设置 `max_items`，也不使用 `status=open` 等会让完成任务退出结果的筛选。查询返回最新状态，不是完整修改历史。
 - `after` 原样使用服务返回的 `next_cursor`。翻页保持查询条件不变；`limit` 是每页条数，`max_items` 是跨所有页总条数。未设置更新时间筛选时，默认按 ID 升序；指定总条数时默认按创建时间从新到旧。需要最新完整状态时从第一页重新遍历。
@@ -174,7 +175,7 @@ MCP 允许客户端同时请求 `read write manage admin`（例如 ChatGPT 从�
 curl "$BASE_URL/api/v1/projects/$PROJECT_ID/llm" \
   -H "Authorization: Bearer $API_KEY"
 
-curl "$BASE_URL/api/v1/projects/$PROJECT_ID/items?limit=50" \
+curl "$BASE_URL/api/v1/projects/$PROJECT_ID/items?limit=100" \
   -H "Authorization: Bearer $API_KEY"
 
 curl "$BASE_URL/api/v1/projects/$PROJECT_ID/items" \

@@ -45,7 +45,7 @@ MCP 2.0 客户端使用 `MCP-Protocol-Version: 2026-07-28`、`Accept: applicatio
 }
 ```
 
-`secret` 的 Base64 部分必须解码为 24–64 字节。服务器先发送签名 verification challenge，回调必须以 2xx JSON 原样回传 `challenge`。回调只允许 HTTPS/443、具有公网 IPv4 地址的域名；每次连接解析并固定地址、验证原域名的 TLS 证书，不跟随重定向。当前 Workers TCP 连接限制适用，IPv6-only 或 Cloudflare 代理的回调地址可能无法连接。失败返回 `-32015`，订阅不会激活。
+`secret` 的 Base64 部分必须解码为 24–64 字节。服务器先发送签名 verification challenge，回调必须以 2xx JSON 原样回传 `challenge`。回调只允许 HTTPS/443、具有公网 IPv4 地址的域名；发送前检查解析地址，并通过 Workers HTTPS fetch 发送，不跟随重定向。DNS 查询和 HTTPS 请求各限时 10 秒，响应最多 64 KiB。Workers 还会检查实际 HTTP 连接的目标地址；IPv6-only 回调地址不受支持。失败返回 `-32015`，订阅不会激活。
 
 订阅由认证身份、回调 URL 和两个过滤参数确定；重复请求刷新同一订阅。默认和最长有效期为 24 小时；可用 `ttlMs` 请求较短有效期（最短 1 分钟），`ttlMs: null` 仍授予有限有效期。客户端应在 `refreshBefore` 前刷新。每个身份最多 20 个活跃订阅。`read` 项目 Key 和具有 read/write/manage scope 的 OAuth 身份均可订阅；管理员身份没有用户项目的订阅权限。发送前重新检查 Key、OAuth grant、用户、项目及角色；撤权、禁用或归档会停止发送。
 

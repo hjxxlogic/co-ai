@@ -80,7 +80,7 @@ beforeAll(async () => {
   const bindings = await mf.getBindings();
   env = { ...bindings, ADMIN_TOKEN: admin, DOCS: { fetch: async (req: Request) => new Response(new URL(req.url).pathname.endsWith('.html') ? '<!doctype html><h1>AI docs</h1><a href="/llm/API.html">API</a>' : 'API docs', { headers: { 'Content-Type': new URL(req.url).pathname.endsWith('.html') ? 'text/html; charset=utf-8' : 'text/plain; charset=utf-8' } }) } } as unknown as Env;
   // D1 exec expects each statement on one line.
-  for (const file of ['0001_initial.sql', '0002_web_management.sql', '0003_roles_and_tags.sql', '0004_password_login.sql', '0005_recipient_roles.sql', '0006_oauth.sql', '0007_project_tables.sql', '0008_attachment_uploads.sql', '0009_mcp_events.sql', '0010_mcp_debug_logs.sql', '0011_items_search.sql']) {
+  for (const file of ['0001_initial.sql', '0002_web_management.sql', '0003_roles_and_tags.sql', '0004_password_login.sql', '0005_recipient_roles.sql', '0006_oauth.sql', '0007_project_tables.sql', '0008_attachment_uploads.sql', '0009_mcp_events.sql', '0010_mcp_debug_logs.sql', '0011_items_search.sql', '0012_workflows.sql', '0013_work_state_updated.sql', '0014_work_desc.sql']) {
     if (file === '0004_password_login.sql') {
       const time = '2025-01-01T00:00:00.000Z';
       await env.DB.batch([
@@ -95,9 +95,138 @@ beforeAll(async () => {
       for (const [table, id] of Object.entries(migrationIds)) migrationRows[table] = (await env.DB.prepare(`SELECT * FROM ${table} WHERE id = ?`).bind(id).first<Record<string, unknown>>())!;
     }
     const sql = await readFile(new URL('../migrations/' + file, import.meta.url), 'utf8');
-    if (file === '0009_mcp_events.sql' || file === '0011_items_search.sql') { await env.DB.exec(sql.replace(/\s+/g, ' ').trim()); continue; }
+    if (file === '0009_mcp_events.sql' || file === '0011_items_search.sql' || file === '0012_workflows.sql') { await env.DB.exec(sql.replace(/\s+/g, ' ').trim()); continue; }
     await env.DB.exec(sql.replace(/^--.*$/gm, '').split(';').map((s) => s.replace(/\s+/g, ' ').trim()).filter(Boolean).join(';\n') + ';');
   }
+});
+
+describe('workflow templates and works', () => {
+  const definition = {
+    initial_state: 'draft',
+    states: [{ id: 'draft', name: '草稿' }, { id: 'review', name: '审核' }, { id: 'end', name: '结束' }],
+    transitions: [{ from: 'draft', to: 'review' }, { from: 'review', to: 'draft' }, { from: 'review', to: 'end' }],
+  };
+
+  it('validates graph structure and keeps old works on their original revision', async () => {
+    const owner = await provision('workflow-version@test.com'), project = await createProject(owner);
+    const base = `/api/v1/projects/${project}`;
+    for (const invalid of [
+      { ...definition, states: definition.states.slice(0, 2) },
+      { ...definition, transitions: [{ from: 'end', to: 'draft' }] },
+      { ...definition, transitions: [{ from: 'draft', to: 'review' }] },
+    ]) expect((await request(`${base}/workflows`, owner, 'POST', { name: 'Invalid', ...invalid })).status).toBe(400);
+    const created = await request(`${base}/workflows`, owner, 'POST', { name: 'Production', ...definition });
+    expect(created.status).toBe(201);
+    const template = (await created.json() as any).data;
+    expect(template.revision).toBe(1);
+    const viaMcp = await mcpTool('createWorkflowTemplate', { projectId: project, body: { name: 'MCP production', ...definition } }, mcpBearer(owner));
+    expect(viaMcp.status).toBe(201);
+    const renamed = await request(`${base}/workflows/${viaMcp.body.data.id}`, owner, 'PATCH', { version: 1, description: 'Updated notes' });
+    expect((await renamed.json() as any).data.revision).toBe(1);
+    const revised = await request(`${base}/workflows/${viaMcp.body.data.id}`, owner, 'PATCH', { version: 2, ...definition });
+    expect((await revised.json() as any).data.revision).toBe(2);
+    const first = (await (await request(`${base}/works`, owner, 'POST', { workflow_id: template.id, title: 'First' })).json() as any).data;
+    const changed = await request(`${base}/workflows/${template.id}`, owner, 'PATCH', {
+      version: 1, ...definition, transitions: [{ from: 'draft', to: 'end' }, { from: 'draft', to: 'review' }, { from: 'review', to: 'end' }],
+    });
+    expect(changed.status).toBe(200);
+    expect((await changed.json() as any).data.revision).toBe(2);
+    const second = (await (await request(`${base}/works`, owner, 'POST', { workflow_id: template.id, title: 'Second' })).json() as any).data;
+    expect(second.revision_id).not.toBe(first.revision_id);
+    expect((await request(`${base}/works/${first.id}/transitions`, owner, 'POST', { version: 1, to_state: 'end' })).status).toBe(400);
+    expect((await request(`${base}/works/${second.id}/transitions`, owner, 'POST', { version: 1, to_state: 'end' })).status).toBe(200);
+    expect((await request(`${base}/works/${second.id}/transitions`, owner, 'POST', { version: 2, to_state: 'draft' })).status).toBe(409);
+    expect((await request(`${base}/workflows/${template.id}?revision=1`, owner).then((r) => r.json()) as any).data.definition.transitions).toEqual(definition.transitions);
+  });
+
+  it('records notes and transitions, protects referenced messages, and enforces project permissions', async () => {
+    const owner = await provision('workflow-note@test.com'), project = await createProject(owner), other = await createProject(owner);
+    const write = (await projectKey(owner, project)).api_key, read = (await projectKey(owner, project, 'read')).api_key;
+    const base = `/api/v1/projects/${project}`;
+    const template = (await (await request(`${base}/workflows`, write, 'POST', { name: 'Review', ...definition })).json() as any).data;
+    const message = (await (await request(`${base}/items`, write, 'POST', { kind: 'message', title: 'Review summary' })).json() as any).data;
+    const foreign = (await (await request(`/api/v1/projects/${other}/items`, owner, 'POST', { kind: 'message', title: 'Other project' })).json() as any).data;
+    expect((await request(`${base}/works`, read, 'POST', { workflow_id: template.id, title: 'No' })).status).toBe(403);
+    expect((await request(`${base}/works`, write, 'POST', { workflow_id: template.id, title: 'Bad', message_item_id: foreign.id })).status).toBe(400);
+    const created = await request(`${base}/works`, write, 'POST', { workflow_id: template.id, title: 'Review audio', message_item_id: message.id });
+    expect(created.status).toBe(201);
+    const work = (await created.json() as any).data;
+    expect((await request(`${base}/works/${work.id}`, read)).status).toBe(200);
+    expect((await request(`/api/v1/projects/${other}/works/${work.id}`, owner)).status).toBe(404);
+    expect((await request(`${base}/items/${message.id}`, write, 'DELETE', { version: message.version })).status).toBe(409);
+    expect((await request(`${base}/items/${message.id}`, write, 'PATCH', { version: message.version, kind: 'note' })).status).toBe(409);
+    const moved = await request(`${base}/works/${work.id}/transitions`, write, 'POST', { version: 1, to_state: 'review' });
+    expect(moved.status).toBe(200);
+    expect((await moved.json() as any).data.current_message_item_id).toBeNull();
+    expect((await request(`${base}/works/${work.id}/transitions`, write, 'POST', { version: 1, to_state: 'end' })).status).toBe(409);
+    expect((await request(`${base}/works/${work.id}`, write, 'PATCH', { version: 2, message_item_id: message.id })).status).toBe(200);
+    const history = await request(`${base}/works/${work.id}/history?limit=2`, read);
+    expect(history.status).toBe(200);
+    const first = await history.json() as any;
+    expect(first.data.map((event: any) => event.event_type)).toEqual(['created', 'transition']);
+    const second = await request(`${base}/works/${work.id}/history?limit=2&after=${first.next_cursor}`, read);
+    expect((await second.json() as any).data[0]).toMatchObject({ sequence: 3, event_type: 'note_updated', message_item_id: message.id });
+    const viaMcp = await mcpTool('listWorkHistory', { projectId: project, workId: work.id }, mcpBearer(read));
+    expect(viaMcp.status).toBe(200);
+    expect(viaMcp.body.data).toHaveLength(3);
+  });
+
+  it('combines current state with last modification time and keeps pagination stable', async () => {
+    const owner = await provision('workflow-filter@test.com'), project = await createProject(owner);
+    const base = `/api/v1/projects/${project}`;
+    const template = (await (await request(`${base}/workflows`, owner, 'POST', { name: 'Filter', ...definition })).json() as any).data;
+    const works = [];
+    for (const name of ['Early review', 'Boundary review', 'Draft']) {
+      const created = await request(`${base}/works`, owner, 'POST', { workflow_id: template.id, title: name });
+      expect(created.status).toBe(201);
+      works.push((await created.json() as any).data);
+    }
+    for (const work of works.slice(0, 2)) {
+      expect((await request(`${base}/works/${work.id}/transitions`, owner, 'POST', { version: 1, to_state: 'review' })).status).toBe(200);
+    }
+    const times = ['2026-10-01T00:00:00.000Z', '2026-10-02T00:00:00.000Z', '2026-10-02T00:00:00.000Z'];
+    for (let i = 0; i < works.length; i++) await env.DB.prepare('UPDATE works SET updated_at = ? WHERE id = ?').bind(times[i], works[i].id).run();
+    const boundary = await request(`${base}/works?state=review&updated_since=2026-10-02T08%3A00%3A00%2B08%3A00&updated_until=2026-10-02T00%3A00%3A00Z`, owner);
+    expect(boundary.status).toBe(200);
+    expect((await boundary.json() as any).data.map((work: any) => work.id)).toEqual([works[1].id]);
+    const query = '?state=review&updated_since=2026-10-01T00%3A00%3A00Z&updated_until=2026-10-02T00%3A00%3A00Z&limit=1';
+    const first = await (await request(`${base}/works${query}`, owner)).json() as any;
+    expect(first.data).toHaveLength(1);
+    const second = await (await request(`${base}/works${query}&after=${first.next_cursor}`, owner)).json() as any;
+    expect(new Set([first.data[0].id, second.data[0].id])).toEqual(new Set([works[0].id, works[1].id]));
+    expect(second.next_cursor).toBeNull();
+    const viaMcp = await mcpTool('listWorks', { projectId: project, state: 'review', updated_since: times[1], updated_until: times[1] }, mcpBearer(owner));
+    expect(viaMcp.body.data.map((work: any) => work.id)).toEqual([works[1].id]);
+    expect((await request(`${base}/works?updated_since=2026-10-03T00%3A00%3A00Z&updated_until=2026-10-02T00%3A00%3A00Z`, owner)).status).toBe(400);
+    expect((await request(`${base}/works?state=review&updated_since=2026-10-02`, owner)).status).toBe(400);
+  });
+
+  it('stores a short work description with an empty default and versioned edits', async () => {
+    const owner = await provision('workflow-desc@test.com'), project = await createProject(owner);
+    const base = `/api/v1/projects/${project}`;
+    const template = (await (await request(`${base}/workflows`, owner, 'POST', { name: 'Descriptions', ...definition })).json() as any).data;
+    const plainResponse = await request(`${base}/works`, owner, 'POST', { workflow_id: template.id, title: 'No description' });
+    expect(plainResponse.status).toBe(201);
+    expect((await plainResponse.json() as any).data.desc).toBe('');
+    const created = await request(`${base}/works`, owner, 'POST', { workflow_id: template.id, title: 'Audio review', desc: 'Check the narration against the locked script.' });
+    expect(created.status).toBe(201);
+    const work = (await created.json() as any).data;
+    expect(work.desc).toBe('Check the narration against the locked script.');
+    expect((await request(`${base}/works/${work.id}`, owner).then((r) => r.json()) as any).data.desc).toBe(work.desc);
+    expect((await request(`${base}/works`, owner).then((r) => r.json()) as any).data.find((entry: any) => entry.id === work.id).desc).toBe(work.desc);
+    expect((await request(`${base}/works`, owner, 'POST', { workflow_id: template.id, title: 'Too long', desc: 'x'.repeat(2001) })).status).toBe(400);
+    const edited = await request(`${base}/works/${work.id}`, owner, 'PATCH', { version: 1, desc: '' });
+    expect(edited.status).toBe(200);
+    expect((await edited.json() as any).data).toMatchObject({ desc: '', version: 2 });
+    expect((await request(`${base}/works/${work.id}`, owner, 'PATCH', { version: 1, desc: 'Stale' })).status).toBe(409);
+    expect((await request(`${base}/works/${work.id}`, owner, 'PATCH', { version: 2, desc: 'x'.repeat(2001) })).status).toBe(400);
+    const viaMcp = await mcpTool('createWork', { projectId: project, body: { workflow_id: template.id, title: 'MCP work', desc: 'Created via MCP' } }, mcpBearer(owner));
+    expect(viaMcp.status).toBe(201);
+    expect(viaMcp.body.data.desc).toBe('Created via MCP');
+    const mcpEdit = await mcpTool('updateWork', { projectId: project, workId: viaMcp.body.data.id, body: { version: 1, desc: 'Edited via MCP' } }, mcpBearer(owner));
+    expect(mcpEdit.status).toBe(200);
+    expect(mcpEdit.body.data.desc).toBe('Edited via MCP');
+  });
 });
 
 async function web(path: string, cookie?: string, method = 'GET', input?: unknown, origin = 'https://co-ai.test') {

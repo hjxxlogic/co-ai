@@ -3079,6 +3079,28 @@
         },
         "security": []
       }
+    },
+    "/api/v1/projects/{projectId}/workflows": {
+      "get": {"operationId":"listWorkflowTemplates","summary":"List project workflow templates","parameters":[{"name":"projectId","in":"path","required":true,"schema":{"type":"string","format":"uuid"}},{"name":"limit","in":"query","schema":{"type":"integer","minimum":1,"maximum":100}},{"name":"after","in":"query","schema":{"type":"string","format":"uuid"}}],"responses":{"200":{"description":"Templates and next cursor"}}},
+      "post": {"operationId":"createWorkflowTemplate","summary":"Create a project workflow template","parameters":[{"name":"projectId","in":"path","required":true,"schema":{"type":"string","format":"uuid"}}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/WorkflowTemplateCreate"}}}},"responses":{"201":{"description":"Created template"}}}
+    },
+    "/api/v1/projects/{projectId}/workflows/{workflowId}": {
+      "get": {"operationId":"getWorkflowTemplate","summary":"Get a workflow template revision","parameters":[{"name":"projectId","in":"path","required":true,"schema":{"type":"string","format":"uuid"}},{"name":"workflowId","in":"path","required":true,"schema":{"type":"string","format":"uuid"}},{"name":"revision","in":"query","schema":{"type":"integer","minimum":1}}],"responses":{"200":{"description":"Template and definition"}}},
+      "patch": {"operationId":"updateWorkflowTemplate","summary":"Update a workflow template; definition changes create a revision","parameters":[{"name":"projectId","in":"path","required":true,"schema":{"type":"string","format":"uuid"}},{"name":"workflowId","in":"path","required":true,"schema":{"type":"string","format":"uuid"}}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/WorkflowTemplatePatch"}}}},"responses":{"200":{"description":"Updated template"}}}
+    },
+    "/api/v1/projects/{projectId}/works": {
+      "get": {"operationId":"listWorks","summary":"List project works by workflow, state, and last modification time","parameters":[{"name":"projectId","in":"path","required":true,"schema":{"type":"string","format":"uuid"}},{"name":"workflow_id","in":"query","schema":{"type":"string","format":"uuid"}},{"name":"state","in":"query","schema":{"type":"string"}},{"name":"updated_since","in":"query","schema":{"type":"string","format":"date-time"},"description":"Inclusive updated_at lower bound; timezone required."},{"name":"updated_until","in":"query","schema":{"type":"string","format":"date-time"},"description":"Inclusive updated_at upper bound; timezone required."},{"name":"limit","in":"query","schema":{"type":"integer","minimum":1,"maximum":100}},{"name":"after","in":"query","schema":{"type":"string","format":"uuid"}}],"responses":{"200":{"description":"Works and next cursor"}}},
+      "post": {"operationId":"createWork","summary":"Create a work from the current workflow revision","parameters":[{"name":"projectId","in":"path","required":true,"schema":{"type":"string","format":"uuid"}}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/WorkCreate"}}}},"responses":{"201":{"description":"Created work"}}}
+    },
+    "/api/v1/projects/{projectId}/works/{workId}": {
+      "get": {"operationId":"getWork","summary":"Get a work and its current state","parameters":[{"name":"projectId","in":"path","required":true,"schema":{"type":"string","format":"uuid"}},{"name":"workId","in":"path","required":true,"schema":{"type":"string","format":"uuid"}}],"responses":{"200":{"description":"Work"}}},
+      "patch": {"operationId":"updateWork","summary":"Update a work title or current message note","parameters":[{"name":"projectId","in":"path","required":true,"schema":{"type":"string","format":"uuid"}},{"name":"workId","in":"path","required":true,"schema":{"type":"string","format":"uuid"}}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/WorkPatch"}}}},"responses":{"200":{"description":"Updated work"}}}
+    },
+    "/api/v1/projects/{projectId}/works/{workId}/transitions": {
+      "post": {"operationId":"transitionWork","summary":"Move a work along an allowed state transition","parameters":[{"name":"projectId","in":"path","required":true,"schema":{"type":"string","format":"uuid"}},{"name":"workId","in":"path","required":true,"schema":{"type":"string","format":"uuid"}}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/WorkTransition"}}}},"responses":{"200":{"description":"Transitioned work"}}}
+    },
+    "/api/v1/projects/{projectId}/works/{workId}/history": {
+      "get": {"operationId":"listWorkHistory","summary":"List the append-only history of a work","parameters":[{"name":"projectId","in":"path","required":true,"schema":{"type":"string","format":"uuid"}},{"name":"workId","in":"path","required":true,"schema":{"type":"string","format":"uuid"}},{"name":"limit","in":"query","schema":{"type":"integer","minimum":1,"maximum":100}},{"name":"after","in":"query","schema":{"type":"integer","minimum":0}}],"responses":{"200":{"description":"History events and next cursor"}}}
     }
   },
   "components": {
@@ -3116,6 +3138,14 @@
       }
     },
     "schemas": {
+      "WorkflowStates": {"type":"array","minItems":2,"maxItems":32,"items":{"type":"object","properties":{"id":{"type":"string","pattern":"^[A-Za-z][A-Za-z0-9_]*$","maxLength":64},"name":{"type":"string","minLength":1,"maxLength":100}},"required":["id","name"],"additionalProperties":false}},
+      "WorkflowTransitions": {"type":"array","maxItems":128,"items":{"type":"object","properties":{"from":{"type":"string"},"to":{"type":"string"}},"required":["from","to"],"additionalProperties":false}},
+      "WorkflowDefinition": {"type":"object","properties":{"initial_state":{"type":"string","pattern":"^[A-Za-z][A-Za-z0-9_]*$","maxLength":64},"states":{"$ref":"#/components/schemas/WorkflowStates"},"transitions":{"$ref":"#/components/schemas/WorkflowTransitions"}},"required":["initial_state","states","transitions"],"additionalProperties":false,"description":"Must contain {id:end,name:结束}; end has no outgoing edge and every state is reachable and leads to end."},
+      "WorkflowTemplateCreate": {"type":"object","properties":{"name":{"type":"string","minLength":1,"maxLength":200},"description":{"type":"string","maxLength":2000},"initial_state":{"type":"string"},"states":{"$ref":"#/components/schemas/WorkflowStates"},"transitions":{"$ref":"#/components/schemas/WorkflowTransitions"}},"required":["name","initial_state","states","transitions"],"additionalProperties":false},
+      "WorkflowTemplatePatch": {"type":"object","properties":{"version":{"type":"integer","minimum":1},"name":{"type":"string","minLength":1,"maxLength":200},"description":{"type":"string","maxLength":2000},"initial_state":{"type":"string"},"states":{"$ref":"#/components/schemas/WorkflowStates"},"transitions":{"$ref":"#/components/schemas/WorkflowTransitions"}},"required":["version"],"additionalProperties":false,"description":"Definition fields must be supplied together."},
+      "WorkCreate": {"type":"object","properties":{"workflow_id":{"type":"string","format":"uuid"},"title":{"type":"string","minLength":1,"maxLength":200},"desc":{"type":"string","maxLength":2000,"default":""},"message_item_id":{"type":["string","null"],"format":"uuid"}},"required":["workflow_id","title"],"additionalProperties":false},
+      "WorkPatch": {"type":"object","properties":{"version":{"type":"integer","minimum":1},"title":{"type":"string","minLength":1,"maxLength":200},"desc":{"type":"string","maxLength":2000},"message_item_id":{"type":["string","null"],"format":"uuid"}},"required":["version"],"additionalProperties":false},
+      "WorkTransition": {"type":"object","properties":{"version":{"type":"integer","minimum":1},"to_state":{"type":"string"},"message_item_id":{"type":["string","null"],"format":"uuid"}},"required":["version","to_state"],"additionalProperties":false},
       "ItemCreate": {
         "type": "object",
         "properties": {

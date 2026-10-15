@@ -12,7 +12,7 @@ OAuth 使用本站授权服务器的授权码 + S256 PKCE 流程，支持客户�
 
 ## MCP 接口
 
-`POST /mcp` 提供无状态 Streamable HTTP MCP 服务，覆盖本文和 OpenAPI 中 43 个 API 操作；临时上传链接的二进制 PUT 传输不作为 MCP 工具暴露。连接配置及附件、Web 会话说明见 [MCP 连接](./README.md#mcp-连接)。HTTP `/mcp` 请求返回 `426`，GET 支持 SSE 心跳流，POST 支持 JSON 或 SSE 格式响应，DELETE 返回 `405`；GET/POST 连接阶段即要求有效 OAuth Bearer、API Key、管理员令牌或 Web 会话，初始化及工具/文档资源发现也受保护；数据操作复用 REST 权限。HTTP `/llm` 文档与 OAuth 元数据仍公开。
+`POST /mcp` 提供无状态 Streamable HTTP MCP 服务，覆盖本文和 OpenAPI 中 53 个 API 操作；临时上传链接的二进制 PUT 传输不作为 MCP 工具暴露。连接配置及附件、Web 会话说明见 [MCP 连接](./README.md#mcp-连接)。HTTP `/mcp` 请求返回 `426`，GET 支持 SSE 心跳流，POST 支持 JSON 或 SSE 格式响应，DELETE 返回 `405`；GET/POST 连接阶段即要求有效 OAuth Bearer、API Key、管理员令牌或 Web 会话，初始化及工具/文档资源发现也受保护；数据操作复用 REST 权限。HTTP `/llm` 文档与 OAuth 元数据仍公开。
 
 MCP 2.0（`2026-07-28`）支持无初始化的 `server/discover`、工具和资源请求，响应带 `resultType: complete`；使用 JSON 响应及 `Accept: application/json`。同一认证端点提供 `events/list`、`events/subscribe`、`events/unsubscribe`，通过签名 Webhook 投递 `role.messages.received`。按项目和收件角色过滤、合并通知、5 分钟发送间隔及订阅生命周期详见 [角色消息通知](./README.md#角色消息通知mcp-events)。事件订阅不属于 REST 工具目录。
 
@@ -36,6 +36,12 @@ MCP 2.0（`2026-07-28`）支持无初始化的 `server/discover`、工具和资�
 | GET | `P/items/{itemId}` | 读取未删除信息 |
 | PATCH | `P/items/{itemId}` | 条件更新，必须传 `version` |
 | DELETE | `P/items/{itemId}` | 条件软删除，JSON 为 `{"version":1}`，成功 `204` |
+| GET / POST | `P/workflows` | 列出 / 创建工作流模板 |
+| GET / PATCH | `P/workflows/{workflowId}` | 读取模板修订版 / 更新模板 |
+| GET / POST | `P/works` | 列出 / 创建工作 |
+| GET / PATCH | `P/works/{workId}` | 读取 / 修改工作标题或当前状态备注 |
+| POST | `P/works/{workId}/transitions` | 沿模板允许的边变更工作状态 |
+| GET | `P/works/{workId}/history` | 分页读取追加式状态历史 |
 | GET | `P/attachments` | 分页列出附件元数据 |
 | POST | `P/attachments?filename=...` | 原始二进制正文上传附件，返回 `201` |
 | POST | `P/attachments/uploads` | 写权限：创建 10 分钟有效的单次二进制上传链接，返回 `201` |
@@ -66,6 +72,20 @@ Content-Type: application/json
 
 {"version":1,"status":"done","content":"已确认接口契约。"}
 ```
+
+### 简单工作流
+
+工作流模板定义允许的状态转换，工作绑定创建时的模板修订版。创建模板需要 `name`（1–200 字符）、可选 `description`（最多 2,000 字符），以及 `initial_state`、`states`、`transitions`。状态 ID 为 1–64 字符的 ASCII 字母、数字或下划线且首字符为字母。模板须包含 `{ "id": "end", "name": "结束" }`，初始状态不能是 `end`；结束状态无出边，每个状态必须从初始状态可达并能到达 `end`。最多 32 个状态、128 条有向边，不允许重复边和自环。
+
+```json
+{"name":"内容制作","initial_state":"draft","states":[{"id":"draft","name":"草稿"},{"id":"review","name":"审核"},{"id":"end","name":"结束"}],"transitions":[{"from":"draft","to":"review"},{"from":"review","to":"end"}]}
+```
+
+`PATCH P/workflows/{workflowId}` 必须带当前模板 `version`；修改定义时三个定义字段一起提交，并产生新的不可变修订版。`GET` 可用 `revision=1` 读取旧版。已有工作固定使用创建时的修订版，新工作使用当前修订版。工作创建正文为 `{workflow_id, title, desc?, message_item_id?}`，状态自动设为初始状态。`desc` 是简短描述，最多 2,000 字符，省略时为空字符串；列表和详情均返回该字段。`PATCH P/works/{workId}` 使用 `{version, title?, desc?, message_item_id?}`，可单独更新或清空 `desc`；`POST P/works/{workId}/transitions` 使用 `{version, to_state, message_item_id?}`，进入新状态时省略备注则清空。修改成功后工作 `version` 加 1；版本不符返回 `409`。工作不能直接修改 `current_state`，进入 `end` 后不能再转换。
+
+`message_item_id` 可为 `null`，否则必须引用同项目未删除的 `kind=message` 信息。被工作历史引用的消息不能删除或改为其他 kind（`409`）。工作当前状态保存在 `current_state`，当前备注保存在 `current_message_item_id`；`GET P/works/{workId}/history` 按序返回 `created`、`transition`、`note_updated` 事件，支持 `limit`（1–100）和数字 `after` 游标。项目 read Key 可读，write Key 可创建和修改；MCP 工具与对应 REST `operationId` 同名，例如 `createWorkflowTemplate`、`createWork`、`transitionWork`、`listWorkHistory`。
+
+`works.updated_at` 是最后修改时间，创建和每次 PATCH / 状态转换都会更新。`GET P/works` 可同时传 `state`、`updated_since` 和 `updated_until`：两个时间边界均包含，格式为带时区的 ISO 8601 时间，起点不得晚于终点；还可叠加 `workflow_id`。结果按工作 ID 升序分页，使用返回的 `next_cursor` 获取下一页，翻页时保持筛选条件不变。例如 `GET P/works?state=review&updated_since=2026-10-01T00%3A00%3A00Z`。
 
 ### 项目角色
 

@@ -22,6 +22,11 @@ const selectItem = `SELECT i.*, r.name AS role_name,
 type Row = Record<string, unknown> & { id: string; created_at: string; updated_at: string; tags: string; recipient_role_ids: string; recipient_roles?: string };
 const serialize = (row: Row) => ({ ...row, tags: JSON.parse(row.tags) as string[], recipient_role_ids: JSON.parse(row.recipient_role_ids) as string[], recipient_roles: JSON.parse(row.recipient_roles ?? '[]') as { id: string; name: string | null }[] });
 const timestamp = z.iso.datetime({ offset: true });
+function referencedMessage(error: unknown): never {
+  const message = error instanceof Error ? error.message + (error.cause instanceof Error ? error.cause.message : '') : '';
+  if (message.includes('Work message is referenced')) throw new HTTPException(409, { message: 'Work message is referenced' });
+  throw error;
+}
 
 function parseTime(value: string | undefined, field: string) {
   if (value === undefined) return null;
@@ -151,8 +156,11 @@ itemsApi.patch('/:itemId', async (c) => {
   const input = await body(c, fields.partial().extend({ version }).refine((v) => Object.keys(v).length > 1, 'At least one changed field is required'));
   if (input.role_id !== undefined) await activeRole(c, input.role_id);
   if (input.recipient_role_ids !== undefined) await activeRecipients(c, input.recipient_role_ids);
-  const row = await c.env.DB.prepare('UPDATE items SET title = COALESCE(?, title), content = COALESCE(?, content), kind = COALESCE(?, kind), status = COALESCE(?, status), role_id = CASE WHEN ? = 1 THEN ? ELSE role_id END, tags = COALESCE(?, tags), recipient_role_ids = COALESCE(?, recipient_role_ids), version = version + 1, updated_by = ?, updated_at = ? WHERE id = ? AND project_id = ? AND version = ? AND deleted_at IS NULL RETURNING *')
-    .bind(input.title ?? null, input.content ?? null, input.kind ?? null, input.status ?? null, Number(input.role_id !== undefined), input.role_id ?? null, input.tags === undefined ? null : JSON.stringify(input.tags), input.recipient_role_ids === undefined ? null : JSON.stringify(input.recipient_role_ids), c.get('principal').id, new Date().toISOString(), c.req.param('itemId'), c.req.param('projectId'), input.version).first<Row>();
+  let row: Row | null;
+  try {
+    row = await c.env.DB.prepare('UPDATE items SET title = COALESCE(?, title), content = COALESCE(?, content), kind = COALESCE(?, kind), status = COALESCE(?, status), role_id = CASE WHEN ? = 1 THEN ? ELSE role_id END, tags = COALESCE(?, tags), recipient_role_ids = COALESCE(?, recipient_role_ids), version = version + 1, updated_by = ?, updated_at = ? WHERE id = ? AND project_id = ? AND version = ? AND deleted_at IS NULL RETURNING *')
+      .bind(input.title ?? null, input.content ?? null, input.kind ?? null, input.status ?? null, Number(input.role_id !== undefined), input.role_id ?? null, input.tags === undefined ? null : JSON.stringify(input.tags), input.recipient_role_ids === undefined ? null : JSON.stringify(input.recipient_role_ids), c.get('principal').id, new Date().toISOString(), c.req.param('itemId'), c.req.param('projectId'), input.version).first<Row>();
+  } catch (error) { referencedMessage(error); }
   if (!row) await conflictOrMissing(c);
   const saved = await c.env.DB.prepare(`${selectItem} WHERE i.id = ? AND i.project_id = ?`).bind(row!.id, c.req.param('projectId')).first<Row>();
   return c.json({ data: serialize(saved!) });
@@ -164,8 +172,11 @@ async function conflictOrMissing(c: Context<AppEnv>): Promise<never> {
 itemsApi.delete('/:itemId', async (c) => {
   const input = await body(c, z.object({ version }).strict());
   const time = new Date().toISOString();
-  const result = await c.env.DB.prepare('UPDATE items SET deleted_at = ?, updated_at = ?, updated_by = ?, version = version + 1 WHERE id = ? AND project_id = ? AND version = ? AND deleted_at IS NULL')
-    .bind(time, time, c.get('principal').id, c.req.param('itemId'), c.req.param('projectId'), input.version).run();
+  let result: D1Result;
+  try {
+    result = await c.env.DB.prepare('UPDATE items SET deleted_at = ?, updated_at = ?, updated_by = ?, version = version + 1 WHERE id = ? AND project_id = ? AND version = ? AND deleted_at IS NULL')
+      .bind(time, time, c.get('principal').id, c.req.param('itemId'), c.req.param('projectId'), input.version).run();
+  } catch (error) { referencedMessage(error); }
   if (!result.meta.changes) await conflictOrMissing(c);
   return c.body(null, 204);
 });

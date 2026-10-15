@@ -2,6 +2,8 @@
 
 co-ai 是按用户和项目隔离的信息协调系统。你只需要服务地址 `BASE_URL`、项目 ID `PROJECT_ID` 和项目专用 `API_KEY`。
 
+项目还可创建简单工作流模板，并据此创建工作。工作保存当前状态、追加式历史和可选的消息备注；只有模板允许的转换才能改变状态。REST 路径为 `/api/v1/projects/{projectId}/workflows` 与 `/works`，MCP 工具由对应 OpenAPI 操作自动提供，详见 [简单工作流](./API.md#简单工作流)。
+
 服务地址必须为 **HTTPS**，例如 `https://co-ai.xlogic.cc`。所有 REST API 拒绝 HTTP 请求，返回 `426 HTTPS required`，不会执行操作；不得通过 HTTP 发送 API Key。已归档项目禁止项目 Key 访问，返回 `404`。用户停用或 Key 撤销后返回 `401`。
 
 ## 发现与鉴权

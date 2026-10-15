@@ -98,7 +98,15 @@ itemsApi.get('/', async (c) => {
   }
   if (from) { where.push('i.created_at >= ?'); bindings.push(from); }
   if (to) { where.push('i.created_at <= ?'); bindings.push(to); }
-  if (q) { where.push('(instr(lower(i.title), lower(?)) > 0 OR instr(lower(i.content), lower(?)) > 0)'); bindings.push(q, q); }
+  if (q) {
+    // Trigram search cannot index terms shorter than three characters.
+    if ([...q].length >= 3) {
+      where.push('i.rowid IN (SELECT rowid FROM items_search WHERE items_search MATCH ?)');
+      bindings.push(`"${q.replace(/"/g, '""')}"`);
+    }
+    where.push('(instr(lower(i.title), lower(?)) > 0 OR instr(lower(i.content), lower(?)) > 0)');
+    bindings.push(q, q);
+  }
   if (filterTags.length && tagMode === 'any') {
     where.push(`EXISTS (SELECT 1 FROM json_each(i.tags) t WHERE t.value IN (${filterTags.map(() => '?').join(',')}))`);
     bindings.push(...filterTags);

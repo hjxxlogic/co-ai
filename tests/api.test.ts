@@ -80,7 +80,7 @@ beforeAll(async () => {
   const bindings = await mf.getBindings();
   env = { ...bindings, ADMIN_TOKEN: admin, DOCS: { fetch: async (req: Request) => new Response(new URL(req.url).pathname.endsWith('.html') ? '<!doctype html><h1>AI docs</h1><a href="/llm/API.html">API</a>' : 'API docs', { headers: { 'Content-Type': new URL(req.url).pathname.endsWith('.html') ? 'text/html; charset=utf-8' : 'text/plain; charset=utf-8' } }) } } as unknown as Env;
   // D1 exec expects each statement on one line.
-  for (const file of ['0001_initial.sql', '0002_web_management.sql', '0003_roles_and_tags.sql', '0004_password_login.sql', '0005_recipient_roles.sql', '0006_oauth.sql', '0007_project_tables.sql', '0008_attachment_uploads.sql', '0009_mcp_events.sql', '0010_mcp_debug_logs.sql']) {
+  for (const file of ['0001_initial.sql', '0002_web_management.sql', '0003_roles_and_tags.sql', '0004_password_login.sql', '0005_recipient_roles.sql', '0006_oauth.sql', '0007_project_tables.sql', '0008_attachment_uploads.sql', '0009_mcp_events.sql', '0010_mcp_debug_logs.sql', '0011_items_search.sql']) {
     if (file === '0004_password_login.sql') {
       const time = '2025-01-01T00:00:00.000Z';
       await env.DB.batch([
@@ -95,7 +95,7 @@ beforeAll(async () => {
       for (const [table, id] of Object.entries(migrationIds)) migrationRows[table] = (await env.DB.prepare(`SELECT * FROM ${table} WHERE id = ?`).bind(id).first<Record<string, unknown>>())!;
     }
     const sql = await readFile(new URL('../migrations/' + file, import.meta.url), 'utf8');
-    if (file === '0009_mcp_events.sql') { await env.DB.exec(sql.replace(/\s+/g, ' ').trim()); continue; }
+    if (file === '0009_mcp_events.sql' || file === '0011_items_search.sql') { await env.DB.exec(sql.replace(/\s+/g, ' ').trim()); continue; }
     await env.DB.exec(sql.replace(/^--.*$/gm, '').split(';').map((s) => s.replace(/\s+/g, ' ').trim()).filter(Boolean).join(';\n') + ';');
   }
 });
@@ -393,6 +393,32 @@ describe('project roles, message TAGs and search windows', () => {
     expect((await query(`role_id=${role.id}&tag=api&from=${boundary}&q=Middle&kind=message`)).data.map((i: any) => i.id)).toEqual([records[1].id]);
     expect((await query('q=%25')).data).toHaveLength(0); // '%' is literal text, not a SQL wildcard.
     expect((await query('tag=' + encodeURIComponent("x' OR 1=1--"))).data).toHaveLength(0);
+  });
+
+  it('searches indexed substrings across existing, new and edited items', async () => {
+    const owner = await provision('search-index@test.com'), project = await createProject(owner);
+    const base = `/api/v1/projects/${project}/items`;
+    const query = async (value: string, extra = '') => {
+      const response = await request(`${base}?q=${encodeURIComponent(value)}${extra}`, owner);
+      expect(response.status).toBe(200);
+      return await response.json() as any;
+    };
+    const legacy = await env.DB.prepare('SELECT rowid FROM items_search WHERE items_search MATCH ?').bind('"Legacy"').all();
+    expect(legacy.results).toHaveLength(1);
+    const created = (await (await request(base, owner, 'POST', { title: 'Prefix a"bc suffix', content: '中文搜索 !!!' })).json() as any).data;
+    for (const value of ['refi', 'a"bc', '中文搜', '!!!', 'bc']) {
+      const result = await query(value);
+      expect(result.data.map((item: any) => item.id), value).toContain(created.id);
+    }
+    expect((await query('%')).total_count).toBe(0);
+    expect((await query('unmatched')).total_count).toBe(0);
+    const edited = await request(`${base}/${created.id}`, owner, 'PATCH', { version: 1, title: 'Updated title', content: 'other text' });
+    expect(edited.status).toBe(200);
+    expect((await query('a"bc')).total_count).toBe(0);
+    expect((await query('dated')).data.map((item: any) => item.id)).toContain(created.id);
+    expect((await request(`${base}/${created.id}`, owner, 'DELETE', { version: 2 })).status).toBe(204);
+    expect((await query('dated')).total_count).toBe(0);
+    expect((await query('dated', '&include_deleted=true')).data.map((item: any) => item.id)).toContain(created.id);
   });
 
   it('caps total results across chronological pages and safely breaks timestamp ties', async () => {

@@ -5,7 +5,7 @@ import app from '../src/index';
 import type { Env } from '../src/types';
 import { digest } from '../src/security';
 import { deliverMessageEvents, signedHeaders } from '../src/mcp-events';
-import { webhookPost } from '../src/event-webhook';
+import { webhookPost, WebhookRequestError } from '../src/event-webhook';
 vi.mock('../src/event-webhook', async (original) => ({
   ...await original<typeof import('../src/event-webhook')>(),
   webhookPost: vi.fn(async (_url: string, body: string) => ({ status: 200, body: JSON.stringify({ challenge: JSON.parse(body).challenge }) })),
@@ -1652,5 +1652,23 @@ describe('MCP role message events', () => {
     await env.DB.prepare('UPDATE mcp_event_subscriptions SET expires_at = 0 WHERE id = ?').bind(id).run();
     await deliverMessageEvents(env);
     expect(await env.DB.prepare('SELECT id FROM mcp_event_subscriptions WHERE id = ?').bind(id).first()).toBeNull();
+  });
+
+  it('reports the failing callback stage and status without logging callback secrets', async () => {
+    const owner = await provision('events-diagnostics@test.com'), projectId = await createProject(owner), role = await createRole(owner, projectId, 'Receiver');
+    const params = { name: 'role.messages.received', arguments: { project_id: projectId, recipient_role_id: role.id }, delivery: { mode: 'webhook', url: 'https://receiver.example/private-callback', secret: signingSecret } };
+    const warnings = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      vi.mocked(webhookPost).mockRejectedValueOnce(new WebhookRequestError('dns_lookup', 'dns_failed', 'DNS failed for private-callback', 'ENOTFOUND'));
+      expect((await eventRpc(owner, 'events/subscribe', params)).body.error).toMatchObject({ code: -32015, data: { reason: 'dns_failed', stage: 'dns_lookup' } });
+      expect(warnings).toHaveBeenCalledWith(JSON.stringify({ event: 'mcp_event_callback_verification_failed', reason: 'dns_failed', stage: 'dns_lookup', errorCode: 'ENOTFOUND' }));
+      expect(JSON.stringify(warnings.mock.calls)).not.toContain('private-callback');
+      expect(JSON.stringify(warnings.mock.calls)).not.toContain(signingSecret);
+
+      vi.mocked(webhookPost).mockResolvedValueOnce({ status: 403, body: 'Forbidden' });
+      expect((await eventRpc(owner, 'events/subscribe', params)).body.error).toMatchObject({ code: -32015, data: { reason: 'http_error', stage: 'callback_response', responseStatus: 403 } });
+      vi.mocked(webhookPost).mockResolvedValueOnce({ status: 200, body: '<html>wrong content</html>' });
+      expect((await eventRpc(owner, 'events/subscribe', params)).body.error).toMatchObject({ code: -32015, data: { reason: 'invalid_response', stage: 'callback_response', responseStatus: 200 } });
+    } finally { warnings.mockRestore(); }
   });
 });

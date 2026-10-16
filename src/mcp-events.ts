@@ -5,7 +5,7 @@ import type { AppEnv, Env, Principal } from './types';
 import { bearer, digest } from './security';
 import { sessionPrincipal } from './web-auth';
 import { grantIdentity, requireOAuthScope, type OAuthIdentity } from './oauth-security';
-import { callbackUrl, webhookPost } from './event-webhook';
+import { callbackUrl, webhookPost, WebhookRequestError } from './event-webhook';
 import { timingSafeEqual } from 'node:crypto';
 
 const eventName = 'role.messages.received';
@@ -101,20 +101,23 @@ export async function handleEventMethod(c: Context<AppEnv>, oauth: OAuthIdentity
   if (!existing || existing.verified_until <= now || existing.secret !== secret) {
     const challenge = crypto.randomUUID();
     const body = JSON.stringify({ type: 'verification', challenge });
+    let reason = 'challenge_failed';
+    let stage = 'callback_response';
+    let responseStatus: number | undefined;
     try {
       const response = await webhookPost(url, body, await signedHeaders({ id, secret, previous_secret: null, rotation_until: 0 }, 'msg_verification_' + crypto.randomUUID(), body));
-      const echoed = JSON.parse(response.body) as { challenge?: unknown };
-      if (response.status < 200 || response.status >= 300 || typeof echoed.challenge !== 'string' || !timingSafeEqual(new TextEncoder().encode(await digest(echoed.challenge)), new TextEncoder().encode(await digest(challenge)))) throw new Error();
+      responseStatus = response.status;
+      if (response.status < 200 || response.status >= 300) { reason = 'http_error'; throw new Error(); }
+      let echoed: { challenge?: unknown };
+      try { echoed = JSON.parse(response.body) as { challenge?: unknown }; }
+      catch { reason = 'invalid_response'; throw new Error(); }
+      if (typeof echoed?.challenge !== 'string' || !timingSafeEqual(new TextEncoder().encode(await digest(echoed.challenge)), new TextEncoder().encode(await digest(challenge)))) throw new Error();
     } catch (error) {
-      const message = error instanceof Error ? error.message : '';
-      const category = /timeout/i.test(message) ? 'timeout'
-        : /not public|address|private/i.test(message) ? 'address_rejected'
-        : /ALPNProtocols|not implemented/i.test(message) ? 'unsupported_runtime_option'
-        : /ENOTFOUND|ENODATA|DNS/i.test(message) ? 'dns_failed'
-        : /socket|connect|TLS|certificate/i.test(message) ? 'transport_failed' : 'challenge_failed';
-      // Log categories only: callback URLs, challenges and signing keys are private.
-      console.warn(JSON.stringify({ event: 'mcp_event_callback_verification_failed', category }));
-      throw new McpError(-32015, 'Callback verification failed', { reason: error instanceof Error && /timeout/i.test(error.message) ? 'timeout' : 'challenge_failed' });
+      if (error instanceof WebhookRequestError) { reason = error.reason; stage = error.stage; responseStatus = error.responseStatus; }
+      const details = { reason, stage, ...(responseStatus === undefined ? {} : { responseStatus }) };
+      // Keep callback URLs, challenge values, and signing keys out of diagnostics.
+      console.warn(JSON.stringify({ event: 'mcp_event_callback_verification_failed', ...details, ...(error instanceof WebhookRequestError && error.errorCode ? { errorCode: error.errorCode } : {}) }));
+      throw new McpError(-32015, 'Callback verification failed', details);
     }
   }
   const expiresAt = now + Math.max(60_000, Math.min(input.ttlMs ?? lifetimeMs, lifetimeMs));

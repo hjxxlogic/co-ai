@@ -40,6 +40,20 @@ describe('event webhook security', () => {
     await expect(webhookPost('https://receiver.example/callback', '{}', {})).rejects.toThrow('Callback response too large');
   });
 
+  it('labels DNS, address, HTTP and response failures without exposing callback details', async () => {
+    const url = 'https://receiver.example/private-callback';
+    const dnsError = Object.assign(new Error('lookup failed for private-callback'), { code: 'ENOTFOUND' });
+    vi.mocked(resolve4).mockRejectedValueOnce(dnsError).mockResolvedValueOnce(['10.0.0.1']).mockResolvedValue(['8.8.8.8']);
+    await expect(webhookPost(url, '{}', {})).rejects.toMatchObject({ stage: 'dns_lookup', reason: 'dns_failed', errorCode: 'ENOTFOUND' });
+    await expect(webhookPost(url, '{}', {})).rejects.toMatchObject({ stage: 'address_validation', reason: 'address_rejected' });
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValueOnce(new Error('destination address is private'))
+      .mockRejectedValueOnce(new DOMException('deadline', 'TimeoutError'))
+      .mockResolvedValueOnce(new Response('x'.repeat(64 * 1024 + 1))));
+    await expect(webhookPost(url, '{}', {})).rejects.toMatchObject({ stage: 'http_request', reason: 'address_rejected' });
+    await expect(webhookPost(url, '{}', {})).rejects.toMatchObject({ stage: 'http_request', reason: 'timeout' });
+    await expect(webhookPost(url, '{}', {})).rejects.toMatchObject({ stage: 'response_read', reason: 'response_too_large', responseStatus: 200 });
+  });
+
   it('signs exact body bytes using the Standard Webhooks HMAC format', async () => {
     const secret = 'whsec_' + Buffer.from('12345678901234567890123456789012').toString('base64');
     const body = '{"message":"角色收到消息"}';

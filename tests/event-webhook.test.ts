@@ -45,13 +45,22 @@ describe('event webhook security', () => {
     const dnsError = Object.assign(new Error('lookup failed for private-callback'), { code: 'ENOTFOUND' });
     vi.mocked(resolve4).mockRejectedValueOnce(dnsError).mockResolvedValueOnce(['10.0.0.1']).mockResolvedValue(['8.8.8.8']);
     await expect(webhookPost(url, '{}', {})).rejects.toMatchObject({ stage: 'dns_lookup', reason: 'dns_failed', errorCode: 'ENOTFOUND' });
-    await expect(webhookPost(url, '{}', {})).rejects.toMatchObject({ stage: 'address_validation', reason: 'address_rejected' });
+    await expect(webhookPost(url, '{}', {})).rejects.toMatchObject({ stage: 'address_validation', reason: 'address_rejected', addressDiagnostics: {
+      addressCheck: 'non_public_address', resolvedAddresses: ['10.0.0.1'], addressCount: 1,
+    } });
     vi.stubGlobal('fetch', vi.fn().mockRejectedValueOnce(new Error('destination address is private'))
       .mockRejectedValueOnce(new DOMException('deadline', 'TimeoutError'))
       .mockResolvedValueOnce(new Response('x'.repeat(64 * 1024 + 1))));
     await expect(webhookPost(url, '{}', {})).rejects.toMatchObject({ stage: 'http_request', reason: 'address_rejected' });
     await expect(webhookPost(url, '{}', {})).rejects.toMatchObject({ stage: 'http_request', reason: 'timeout' });
     await expect(webhookPost(url, '{}', {})).rejects.toMatchObject({ stage: 'response_read', reason: 'response_too_large', responseStatus: 200 });
+  });
+
+  it('distinguishes an empty DNS answer from a non-public address', async () => {
+    vi.mocked(resolve4).mockResolvedValueOnce([]);
+    await expect(webhookPost('https://receiver.example/callback', '{}', {})).rejects.toMatchObject({ stage: 'address_validation', addressDiagnostics: {
+      addressCheck: 'empty_result', resolvedAddresses: [], addressCount: 0,
+    } });
   });
 
   it('signs exact body bytes using the Standard Webhooks HMAC format', async () => {

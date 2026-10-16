@@ -2,9 +2,10 @@ import { resolve4 } from 'node:dns/promises';
 
 export type WebhookFailureStage = 'dns_lookup' | 'address_validation' | 'http_request' | 'response_read';
 export type WebhookFailureReason = 'dns_failed' | 'address_rejected' | 'timeout' | 'transport_failed' | 'response_too_large';
+type AddressDiagnostics = { addressCheck: 'empty_result' | 'non_public_address'; resolvedAddresses: string[]; addressCount: number };
 
 export class WebhookRequestError extends Error {
-  constructor(public readonly stage: WebhookFailureStage, public readonly reason: WebhookFailureReason, message: string, public readonly errorCode?: string, public readonly responseStatus?: number) {
+  constructor(public readonly stage: WebhookFailureStage, public readonly reason: WebhookFailureReason, message: string, public readonly errorCode?: string, public readonly responseStatus?: number, public readonly addressDiagnostics?: AddressDiagnostics) {
     super(message);
     this.name = 'WebhookRequestError';
   }
@@ -44,7 +45,12 @@ export async function webhookPost(value: string, body: string, headers: Record<s
   } catch (error) {
     throw new WebhookRequestError('dns_lookup', isTimeout(error) ? 'timeout' : 'dns_failed', 'Callback DNS lookup failed', failureCode(error));
   } finally { clearTimeout(dnsTimer); }
-  if (!addresses.length || addresses.some((address) => !publicIpv4(address))) throw new WebhookRequestError('address_validation', 'address_rejected', 'Callback address is not public');
+  if (!addresses.length || addresses.some((address) => !publicIpv4(address))) {
+    throw new WebhookRequestError('address_validation', 'address_rejected', 'Callback address is not public', undefined, undefined, {
+      addressCheck: addresses.length ? 'non_public_address' : 'empty_result',
+      resolvedAddresses: addresses.slice(0, 16), addressCount: addresses.length,
+    });
+  }
 
   // Workers fetch checks the final destination, including after its own DNS lookup.
   let response: Response;

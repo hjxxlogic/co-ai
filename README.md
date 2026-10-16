@@ -59,6 +59,8 @@ npx wrangler d1 execute DB --remote --command "SELECT direction, sequence, conte
 
 Worker 控制台同步记录 `mcp_debug_request`、`mcp_debug_response` 和 `mcp_debug_completed` 摘要，可通过 `npx wrangler tail co-ai --format json` 实时查看。调试结束后将 `wrangler.jsonc` 中的 `MCP_DEBUG_LOGS` 改为 `false` 并重新部署；本地默认不开启，需在 `.dev.vars` 中设置 `MCP_DEBUG_LOGS=true`。
 
+订阅回调验证失败时，`mcp_event_callback_verification_failed` 日志记录事件名、项目/角色 ID、回调域名、请求 TTL、失败阶段和原因。地址校验失败还记录解析出的前 16 个 IPv4、总数，以及 `empty_result` 或 `non_public_address`。不会记录回调 URL 路径、签名密钥或 challenge；JSON-RPC 错误响应也不包含 DNS 地址。
+
 ### MCP Events 订阅排查状态（2026-10-15）
 
 生产版本 `74c3c7f7-3b6b-45e3-9f64-0ac5729ff3cb`（提交 `86a8d31`）已将 Webhook 发送从原始 TLS socket 改为 Workers `fetch`。改动后，OpenAI MCP 客户端的订阅请求仍返回 JSON-RPC `-32015`、`reason: challenge_failed`；D1 中 01:31:12 UTC 的请求 ID 为 `b3a9da35-3948-4473-b7fb-7db7c229232b`。01:36:24 UTC 再次重试时，实时 Worker 日志记录请求 ID `0952f23f-720a-4ee9-8bcc-8cf3555445f5` 和 `mcp_event_callback_verification_failed` 分类 `address_rejected`，D1 同样记录 `-32015`。

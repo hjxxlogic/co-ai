@@ -115,8 +115,12 @@ export async function handleEventMethod(c: Context<AppEnv>, oauth: OAuthIdentity
     } catch (error) {
       if (error instanceof WebhookRequestError) { reason = error.reason; stage = error.stage; responseStatus = error.responseStatus; }
       const details = { reason, stage, ...(responseStatus === undefined ? {} : { responseStatus }) };
-      // Keep callback URLs, challenge values, and signing keys out of diagnostics.
-      console.warn(JSON.stringify({ event: 'mcp_event_callback_verification_failed', ...details, ...(error instanceof WebhookRequestError && error.errorCode ? { errorCode: error.errorCode } : {}) }));
+      // Log selected request fields only; callback paths, challenges, and signing keys are private.
+      console.warn(JSON.stringify({ event: 'mcp_event_callback_verification_failed', ...details,
+        request: { name: input.name, projectId, recipientRoleId: roleId, callbackHost: new URL(url).hostname, deliveryMode: input.delivery.mode, requestedTtlMs: input.ttlMs ?? null },
+        ...(error instanceof WebhookRequestError && error.errorCode ? { errorCode: error.errorCode } : {}),
+        ...(error instanceof WebhookRequestError && error.addressDiagnostics ? { addressDiagnostics: error.addressDiagnostics } : {}),
+      }));
       throw new McpError(-32015, 'Callback verification failed', details);
     }
   }

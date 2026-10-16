@@ -59,7 +59,9 @@ npx wrangler d1 execute DB --remote --command "SELECT direction, sequence, conte
 
 Worker 控制台同步记录 `mcp_debug_request`、`mcp_debug_response` 和 `mcp_debug_completed` 摘要，可通过 `npx wrangler tail co-ai --format json` 实时查看。调试结束后将 `wrangler.jsonc` 中的 `MCP_DEBUG_LOGS` 改为 `false` 并重新部署；本地默认不开启，需在 `.dev.vars` 中设置 `MCP_DEBUG_LOGS=true`。
 
-订阅回调验证失败时，`mcp_event_callback_verification_failed` 日志记录事件名、项目/角色 ID、回调域名、请求 TTL、失败阶段和原因。地址校验失败还记录解析出的前 16 个 IPv4、总数，以及 `empty_result` 或 `non_public_address`。不会记录回调 URL 路径、签名密钥或 challenge；JSON-RPC 错误响应也不包含 DNS 地址。
+订阅回调验证失败时，`mcp_event_callback_verification_failed` 日志记录事件名、项目/角色 ID、回调域名、请求 TTL、失败阶段和原因。不会记录回调 URL 路径、签名密钥或 challenge。
+
+临时措施：发送前不再用 `resolve4` 做公网 IPv4 预检，回调直接交给 Workers `fetch`。平台仍拒绝私网、本地和链路本地目标。恢复预检前需先确认 Worker 看到的解析结果。
 
 ### MCP Events 订阅排查状态（2026-10-15）
 

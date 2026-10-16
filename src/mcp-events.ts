@@ -119,7 +119,6 @@ export async function handleEventMethod(c: Context<AppEnv>, oauth: OAuthIdentity
       console.warn(JSON.stringify({ event: 'mcp_event_callback_verification_failed', ...details,
         request: { name: input.name, projectId, recipientRoleId: roleId, callbackHost: new URL(url).hostname, deliveryMode: input.delivery.mode, requestedTtlMs: input.ttlMs ?? null },
         ...(error instanceof WebhookRequestError && error.errorCode ? { errorCode: error.errorCode } : {}),
-        ...(error instanceof WebhookRequestError && error.addressDiagnostics ? { addressDiagnostics: error.addressDiagnostics } : {}),
       }));
       throw new McpError(-32015, 'Callback verification failed', details);
     }

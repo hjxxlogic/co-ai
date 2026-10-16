@@ -1659,19 +1659,11 @@ describe('MCP role message events', () => {
     const params = { name: 'role.messages.received', arguments: { project_id: projectId, recipient_role_id: role.id }, delivery: { mode: 'webhook', url: 'https://receiver.example/private-callback', secret: signingSecret } };
     const warnings = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      vi.mocked(webhookPost).mockRejectedValueOnce(new WebhookRequestError('dns_lookup', 'dns_failed', 'DNS failed for private-callback', 'ENOTFOUND'));
-      expect((await eventRpc(owner, 'events/subscribe', params)).body.error).toMatchObject({ code: -32015, data: { reason: 'dns_failed', stage: 'dns_lookup' } });
-      expect(JSON.parse(warnings.mock.calls[0][0])).toMatchObject({ event: 'mcp_event_callback_verification_failed', reason: 'dns_failed', stage: 'dns_lookup',
-        request: { name: 'role.messages.received', projectId, recipientRoleId: role.id, callbackHost: 'receiver.example', deliveryMode: 'webhook', requestedTtlMs: null }, errorCode: 'ENOTFOUND',
+      vi.mocked(webhookPost).mockRejectedValueOnce(new WebhookRequestError('http_request', 'address_rejected', 'destination address is private', 'ECONNREFUSED'));
+      expect((await eventRpc(owner, 'events/subscribe', params)).body.error).toMatchObject({ code: -32015, data: { reason: 'address_rejected', stage: 'http_request' } });
+      expect(JSON.parse(warnings.mock.calls[0][0])).toMatchObject({ event: 'mcp_event_callback_verification_failed', reason: 'address_rejected', stage: 'http_request',
+        request: { name: 'role.messages.received', projectId, recipientRoleId: role.id, callbackHost: 'receiver.example', deliveryMode: 'webhook', requestedTtlMs: null }, errorCode: 'ECONNREFUSED',
       });
-      expect(JSON.stringify(warnings.mock.calls)).not.toContain('private-callback');
-      expect(JSON.stringify(warnings.mock.calls)).not.toContain(signingSecret);
-
-      vi.mocked(webhookPost).mockRejectedValueOnce(new WebhookRequestError('address_validation', 'address_rejected', 'Callback address is not public', undefined, undefined, {
-        addressCheck: 'non_public_address', resolvedAddresses: ['10.0.0.1'], addressCount: 1,
-      }));
-      expect((await eventRpc(owner, 'events/subscribe', params)).body.error).toMatchObject({ code: -32015, data: { reason: 'address_rejected', stage: 'address_validation' } });
-      expect(JSON.parse(warnings.mock.calls[2][0])).toMatchObject({ addressDiagnostics: { addressCheck: 'non_public_address', resolvedAddresses: ['10.0.0.1'], addressCount: 1 } });
       expect(JSON.stringify(warnings.mock.calls)).not.toContain('private-callback');
       expect(JSON.stringify(warnings.mock.calls)).not.toContain(signingSecret);
 

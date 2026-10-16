@@ -47,7 +47,7 @@ MCP 2.0 客户端使用 `MCP-Protocol-Version: 2026-07-28`、`Accept: applicatio
 }
 ```
 
-`secret` 的 Base64 部分必须解码为 24–64 字节。服务器先发送签名 verification challenge，回调必须以 2xx JSON 原样回传 `challenge`。回调只允许 HTTPS/443、具有公网 IPv4 地址的域名；发送前检查解析地址，并通过 Workers HTTPS fetch 发送，不跟随重定向。DNS 查询和 HTTPS 请求各限时 10 秒，响应最多 64 KiB。Workers 还会检查实际 HTTP 连接的目标地址；IPv6-only 回调地址不受支持。失败返回 `-32015`，订阅不会激活。错误的 `data.reason` 区分 `dns_failed`、`address_rejected`、`timeout`、`transport_failed`、`response_too_large`、`http_error`、`invalid_response` 和 `challenge_failed`；`data.stage` 指明失败阶段，收到 HTTP 响应时还包含 `data.responseStatus`。Worker 日志额外记录白名单内的底层错误代码，不记录回调 URL、签名密钥或 challenge。
+`secret` 的 Base64 部分必须解码为 24–64 字节。服务器先发送签名 verification challenge，回调必须以 2xx JSON 原样回传 `challenge`。回调只允许 HTTPS/443 域名，并通过 Workers HTTPS fetch 发送，不跟随重定向。HTTPS 请求限时 10 秒，响应最多 64 KiB。临时跳过发送前的公网 IPv4 预检；Workers 仍会拒绝私网、本地和链路本地目标。失败返回 `-32015`，订阅不会激活。错误的 `data.reason` 区分 `address_rejected`、`timeout`、`transport_failed`、`response_too_large`、`http_error`、`invalid_response` 和 `challenge_failed`；`data.stage` 指明失败阶段，收到 HTTP 响应时还包含 `data.responseStatus`。Worker 日志额外记录白名单内的底层错误代码，不记录回调 URL、签名密钥或 challenge。
 
 订阅由认证身份、回调 URL 和两个过滤参数确定；重复请求刷新同一订阅。默认和最长有效期为 24 小时；可用 `ttlMs` 请求较短有效期（最短 1 分钟），`ttlMs: null` 仍授予有限有效期。客户端应在 `refreshBefore` 前刷新。每个身份最多 20 个活跃订阅。`read` 项目 Key 和具有 read/write/manage scope 的 OAuth 身份均可订阅；管理员身份没有用户项目的订阅权限。发送前重新检查 Key、OAuth grant、用户、项目及角色；撤权、禁用或归档会停止发送。
 

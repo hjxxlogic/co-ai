@@ -63,13 +63,11 @@ Worker 控制台同步记录 `mcp_debug_request`、`mcp_debug_response` 和 `mcp
 
 临时措施：发送前不再用 `resolve4` 做公网 IPv4 预检，回调直接交给 Workers `fetch`。平台仍拒绝私网、本地和链路本地目标。恢复预检前需先确认 Worker 看到的解析结果。
 
-### MCP Events 订阅排查状态（2026-10-15）
+### MCP Events 订阅状态（2026-10-16）
 
-生产版本 `74c3c7f7-3b6b-45e3-9f64-0ac5729ff3cb`（提交 `86a8d31`）已将 Webhook 发送从原始 TLS socket 改为 Workers `fetch`。改动后，OpenAI MCP 客户端的订阅请求仍返回 JSON-RPC `-32015`、`reason: challenge_failed`；D1 中 01:31:12 UTC 的请求 ID 为 `b3a9da35-3948-4473-b7fb-7db7c229232b`。01:36:24 UTC 再次重试时，实时 Worker 日志记录请求 ID `0952f23f-720a-4ee9-8bcc-8cf3555445f5` 和 `mcp_event_callback_verification_failed` 分类 `address_rejected`，D1 同样记录 `-32015`。
+生产版本 `24448867-6f38-4cf0-ba8b-571898c25405`（提交 `7698ce4`）跳过公网 IPv4 预检后，ChatGPT 订阅成功。06:04:27 UTC 的请求 ID 为 `233542eb-77ef-4d82-8e52-57a66a29b32a`，客户端为 `openai-mcp (Codex)`，协议 `2026-07-28`，回调主机为 `connectors.api.openai.com`。响应返回订阅 `sub_170fa9701a6005a4db23fd4451cf40be2ce86d46c582e6f6fb9730da0ca8b3b5`，`refreshBefore` 为 `2026-10-17T06:04:27.708Z`。
 
-`address_rejected` 由错误消息匹配得出，现有日志无法区分 DNS 公网 IPv4 预检、Workers `fetch` 的目标地址拒绝或回调响应处理阶段的异常。排查时通过 Cloudflare DNS 查询，`connectors.api.openai.com` 返回公网地址 `104.18.38.184` 和 `172.64.149.72`；这不代表请求执行时 Worker 看到的解析结果。日志也没有回调 HTTP 状态或底层错误原文。历史 Workers Observability 查询对当前凭据返回 403，实时 `wrangler tail` 可用；D1 调试正文保留 24 小时。
-
-下次调试先在服务端为地址预检、`fetch` 和回调响应分别记录不含 URL、路径、密钥或 challenge 的阶段与错误代码，再实时捕获一次订阅请求。确认具体阶段后再决定修复；目前没有确认订阅成功。
+同一项目和角色在 02:52 UTC 与 03:01 UTC 的订阅停在公网 IPv4 预检，返回 `-32015`、`reason: address_rejected`、`stage: address_validation`。预检关闭后，verification challenge 经 Workers `fetch` 完成。公网 IPv4 预检仍临时关闭。
 
 ## 本地启动
 

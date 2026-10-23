@@ -5,6 +5,7 @@ import type { AppEnv } from './types';
 import { body, pagination } from './http';
 import { digest } from './security';
 import { activeRole } from './roles';
+import { notifyMessageEvent } from './events-live';
 
 export const itemsApi = new Hono<AppEnv>();
 const kind = z.enum(['note', 'task', 'decision', 'message']);
@@ -144,6 +145,10 @@ itemsApi.post('/', async (c) => {
   const id = crypto.randomUUID(), time = new Date().toISOString(), keyId = c.get('principal').id;
   const row = await c.env.DB.prepare('INSERT INTO items (id, project_id, title, content, kind, status, role_id, tags, recipient_role_ids, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *')
     .bind(id, c.req.param('projectId'), input.title, input.content, input.kind, input.status, input.role_id, JSON.stringify(input.tags), JSON.stringify(input.recipient_role_ids), keyId, keyId, time, time).first<Row>();
+  if (input.kind === 'message') await notifyMessageEvent(c.env, {
+    project_id: c.req.param('projectId')!, message_id: id, timestamp: time,
+    sender_role_id: input.role_id, recipient_role_ids: input.recipient_role_ids,
+  });
   const saved = await c.env.DB.prepare(`${selectItem} WHERE i.id = ? AND i.project_id = ?`).bind(row!.id, c.req.param('projectId')).first<Row>();
   return c.json({ data: serialize(saved!) }, 201);
 });

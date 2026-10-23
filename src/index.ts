@@ -11,11 +11,14 @@ import { csrfGuard, sessionPrincipal, webAuth } from './web-auth';
 import { adminApi } from './admin';
 import { rolesApi } from './roles';
 import { itemsApi } from './items';
+import { restEvents } from './rest-events';
 import { workflowsApi, worksApi } from './workflows';
 import { mcpApi } from './mcp';
 import { mcpDebug, cleanupMcpDebugLogs } from './mcp-debug';
 import { challenge, oauthIdentity, requireOAuthScope, oauthContext, type OAuthEnv } from './oauth-security';
 import { oauthApi, oauthMetadata, protectedMetadata } from './oauth';
+
+export { EventsLive } from './events-live';
 
 const app = new Hono<AppEnv>();
 const now = () => new Date().toISOString();
@@ -52,14 +55,14 @@ app.use('*', async (c, next) => {
     if (c.req.method === 'OPTIONS') {
       c.header('Access-Control-Allow-Origin', '*');
       c.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
-      c.header('Access-Control-Allow-Headers', 'Authorization, Content-Type, MCP-Protocol-Version, MCP-Session-Id');
+      c.header('Access-Control-Allow-Headers', 'Authorization, Content-Type, MCP-Protocol-Version, MCP-Session-Id, Last-Event-ID');
       return c.body(null, 204);
     }
   }
   await next();
   if (path.startsWith('/.well-known/') || resource) {
     c.header('Access-Control-Allow-Origin', '*');
-    c.header('Access-Control-Expose-Headers', 'WWW-Authenticate, MCP-Protocol-Version');
+    c.header('Access-Control-Expose-Headers', 'WWW-Authenticate, MCP-Protocol-Version, Retry-After');
   }
 });
 app.onError((error, c) => {
@@ -123,6 +126,7 @@ app.use('/api/v1/*', async (c, next) => {
   c.set('principal', key);
   await next();
 });
+app.route('/api/v1/events', restEvents);
 app.get('/api/v1/me', async (c) => {
   ownerOnly(c);
   return c.json({ data: await c.env.DB.prepare('SELECT id, email, name, username, created_at, disabled_at FROM users WHERE id = ?').bind(c.get('principal').user_id).first() });

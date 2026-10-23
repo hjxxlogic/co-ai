@@ -21,6 +21,147 @@
     }
   ],
   "paths": {
+    "/api/v1/events": {
+      "get": {
+        "operationId": "listRestEvents",
+        "x-mcp-tool": false,
+        "summary": "List REST SSE event definitions (separate from MCP webhook events)",
+        "responses": {
+          "200": {
+            "description": "Event catalog",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "const": "role.messages.received"
+                          },
+                          "delivery": {
+                            "type": "array",
+                            "items": {
+                              "const": "sse"
+                            }
+                          },
+                          "description": {
+                            "type": "string"
+                          },
+                          "inputSchema": {
+                            "type": "object"
+                          },
+                          "payloadSchema": {
+                            "type": "object"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "OAuth read scope required"
+          }
+        }
+      }
+    },
+    "/api/v1/events/stream": {
+      "get": {
+        "operationId": "streamRestEvents",
+        "x-mcp-tool": false,
+        "summary": "Subscribe to immediate message hints via SSE",
+        "description": "API Key, REST OAuth read scope or user Web session. Active project and recipient role required. Excludes messages sent by the subscribed role. Each stream ends after 55 seconds; revocation takes effect on reconnect. No replay; Last-Event-ID is rejected. Wait for ready before fetching all REST catch-up pages, merge by ID/version and save sync_until only after completing pagination. Heartbeats every 15 seconds. Maximum 16 streams per user per project and 256 per project. Cross-origin Authorization fetch is supported; credentialed cross-origin cookies are not.",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "const": "role.messages.received"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "query",
+            "name": "recipient_role_id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "retry: 1000 and ready event, then role.messages.received events. Each data envelope contains eventId, name, timestamp and data (project_id, recipient_role_id, message_count=1, first_message_id=last_message_id, first_received_at=last_received_at). Event IDs are stable per message/recipient, for deduplication only. No message body.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid, duplicate or unknown query parameter, or unsupported Last-Event-ID"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "OAuth read scope required"
+          },
+          "404": {
+            "description": "Project or role unavailable"
+          },
+          "429": {
+            "description": "Connection limit exceeded",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "const": 30
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Event service unavailable"
+          }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          },
+          {
+            "OAuth": [
+              "read"
+            ]
+          },
+          {
+            "WebSession": []
+          }
+        ]
+      }
+    },
     "/api/admin/users": {
       "post": {
         "operationId": "post_api_admin_users",

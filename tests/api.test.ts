@@ -78,7 +78,7 @@ beforeAll(async () => {
     env: { DB: { type: 'd1', id: 'test-db' }, FILES: { type: 'r2', name: 'test-files' } },
   } }] });
   const bindings = await mf.getBindings();
-  env = { ...bindings, ADMIN_TOKEN: admin, DOCS: { fetch: async (req: Request) => new Response(new URL(req.url).pathname.endsWith('.html') ? '<!doctype html><h1>AI docs</h1><a href="/llm/API.html">API</a>' : 'API docs', { headers: { 'Content-Type': new URL(req.url).pathname.endsWith('.html') ? 'text/html; charset=utf-8' : 'text/plain; charset=utf-8' } }) } } as unknown as Env;
+  env = { ...bindings, EVENTS_LIVE: { idFromName: (name: string) => name, get: () => ({ fetch: async () => new Response(null, { status: 204 }) }) }, ADMIN_TOKEN: admin, DOCS: { fetch: async (req: Request) => new Response(new URL(req.url).pathname.endsWith('.html') ? '<!doctype html><h1>AI docs</h1><a href="/llm/API.html">API</a>' : 'API docs', { headers: { 'Content-Type': new URL(req.url).pathname.endsWith('.html') ? 'text/html; charset=utf-8' : 'text/plain; charset=utf-8' } }) } } as unknown as Env;
   // D1 exec expects each statement on one line.
   for (const file of ['0001_initial.sql', '0002_web_management.sql', '0003_roles_and_tags.sql', '0004_password_login.sql', '0005_recipient_roles.sql', '0006_oauth.sql', '0007_project_tables.sql', '0008_attachment_uploads.sql', '0009_mcp_events.sql', '0010_mcp_debug_logs.sql', '0011_items_search.sql', '0012_workflows.sql', '0013_work_state_updated.sql', '0014_work_desc.sql']) {
     if (file === '0004_password_login.sql') {
@@ -98,6 +98,47 @@ beforeAll(async () => {
     if (file === '0009_mcp_events.sql' || file === '0011_items_search.sql' || file === '0012_workflows.sql') { await env.DB.exec(sql.replace(/\s+/g, ' ').trim()); continue; }
     await env.DB.exec(sql.replace(/^--.*$/gm, '').split(';').map((s) => s.replace(/\s+/g, ' ').trim()).filter(Boolean).join(';\n') + ';');
   }
+});
+
+describe('REST SSE authorization and write isolation', () => {
+  it('keeps committed message writes successful when live notification fails and never notifies failed writes or updates', async () => {
+    const owner = await provision('rest-events-failures@test.com'), project = await createProject(owner);
+    const base = `/api/v1/projects/${project}/items`;
+    const fetch = vi.fn(async () => { throw new Error('DO unavailable'); });
+    const localEnv = { ...env, EVENTS_LIVE: { idFromName: (name: string) => name, get: () => ({ fetch }) } } as unknown as Env;
+    const send = (method: string, url: string, body: unknown) => app.request('https://co-ai.test' + url, {
+      method, headers: { Authorization: `Bearer ${owner}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    }, localEnv);
+    expect((await send('POST', base, { title: 'Invalid', kind: 'message', recipient_role_ids: [crypto.randomUUID()] })).status).toBe(400);
+    expect(fetch).not.toHaveBeenCalled();
+    const response = await send('POST', base, { title: 'Committed', kind: 'message' });
+    expect(response.status).toBe(201);
+    const item = (await response.json() as any).data;
+    expect(fetch).toHaveBeenCalledOnce();
+    expect((await request(base + '/' + item.id, owner)).status).toBe(200);
+    expect((await send('PATCH', base + '/' + item.id, { version: 1, content: 'Updated' })).status).toBe(200);
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it('authorizes REST event streams with REST OAuth and user sessions and rejects revoked grants', async () => {
+    const owner = await provision('rest-events-oauth@test.com'), project = await createProject(owner);
+    const role = await createRole(owner, project, 'Receiver');
+    const cookie = await login('user', owner), clientId = await registerOAuth('REST events');
+    const resource = 'https://co-ai.test/api/v1';
+    const tokens = await oauthTokens(clientId, await approveOAuth(await startOAuth(clientId, cookie, resource), cookie, project), resource);
+    const streamPath = `/api/v1/events/stream?name=role.messages.received&project_id=${project}&recipient_role_id=${role.id}`;
+    const fetch = vi.fn(async () => new Response(null, { status: 429 }));
+    const original = env.EVENTS_LIVE;
+    env.EVENTS_LIVE = { idFromName: (name: string) => name, get: () => ({ fetch }) } as unknown as DurableObjectNamespace;
+    try {
+      expect((await request(streamPath, tokens.access_token)).status).toBe(429);
+      expect((await web(streamPath, cookie)).status).toBe(429);
+      expect(fetch).toHaveBeenCalledTimes(2);
+      await oauthForm('/oauth/revoke', { client_id: clientId, token: tokens.access_token });
+      expect((await request(streamPath, tokens.access_token)).status).toBe(401);
+      expect(fetch).toHaveBeenCalledTimes(2);
+    } finally { env.EVENTS_LIVE = original; }
+  });
 });
 
 describe('workflow templates and works', () => {

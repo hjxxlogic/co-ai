@@ -220,3 +220,5 @@ curl "$BASE_URL/api/v1/projects/$PROJECT_ID/items" \
 ## 项目结构化数据表
 
 每个项目可配置多张独立 D1 表。在工作台“数据表”页定义字段，或通过 `createProjectTable` 工具创建（需要所有者 Key / OAuth manage）。AI 先用 `listProjectTables`、`getProjectTable` 发现表和字段，再用 `listTableRows`、`getTableRow`、`createTableRow`、`updateTableRow`、`deleteTableRow` 读写。项目读写 Key 可管理记录，只读 Key 只能查询；所有者可管理表。记录修改/删除必须带当前 version，冲突后重新读取并合并。详情及过滤规则见 [项目 D1 数据表](./API.md#项目-d1-数据表)。
+
+REST 客户端可使用独立的 [REST SSE 事件](./API.md#rest-sse-事件)：先连接 `/api/v1/events/stream` 并等待 ready，再并行消费通知与 REST 全分页补读。即时提示与 MCP webhook 分别订阅，重连必须补读，不支持事件重放。

@@ -1,5 +1,6 @@
 export interface Env {
   DB: D1Database;
+  EVENTS_LIVE: DurableObjectNamespace;
   FILES: R2Bucket;
   DOCS: Fetcher;
   ADMIN_TOKEN: string;

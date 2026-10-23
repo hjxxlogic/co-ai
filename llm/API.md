@@ -232,3 +232,26 @@ Authorization: Bearer API_KEY
 ```
 
 项目只读 Key 无法新增/修改/删除记录，项目读写 Key 可以管理记录但不能创建、修改或删除表。项目归档后项目 Key 暂停访问；项目所有者仍能查看和维护表。MCP 对应工具为 `listProjectTables/createProjectTable/getProjectTable/updateProjectTable/deleteProjectTable` 和 `listTableRows/createTableRow/getTableRow/updateTableRow/deleteTableRow`；JSON 正文放入工具参数 `body`。使用 `getProjectTable` 读取字段定义后再写入，更新前读取记录版本。工作台的“数据表”页也可创建表、查看和编辑记录。
+
+
+## REST SSE 事件
+
+`GET /api/v1/events` 返回 `{data: [...]}` 事件目录，当前事件为 `role.messages.received`，`delivery: ["sse"]`。它与 MCP webhook 订阅独立，逐条即时通知，不进行五分钟聚合。仅新建 `kind=message` 触发；更新、转换类型及删除不触发。包括 `ALL` 广播，但与 MCP webhook 一样排除发送角色自身。
+
+```http
+GET /api/v1/events/stream?name=role.messages.received&project_id=<uuid>&recipient_role_id=<uuid>
+Authorization: Bearer <API_KEY_OR_REST_OAUTH_TOKEN>
+Accept: text/event-stream
+```
+
+复用 REST 的用户/项目 API Key、REST resource OAuth（read、write 或 manage）及用户 Web 会话认证；管理员凭据不授予项目事件访问权。必须能访问未归档项目和该项目的有效接收角色；角色筛选不授予权限。缺失、重复、未知或非法参数返回 400，不可用项目/角色返回 404。支持携带 Authorization 的跨域 fetch 和预检；Cookie 只支持同站会话，不启用跨域凭证。Key 不得放入 URL。浏览器需使用 fetch 流式读取以设置 Authorization。
+
+成功响应为 `text/event-stream`，缓存策略为 `no-store, no-transform`。订阅生效后发送 `retry: 1000`、`event: ready`、`data: {}`；每 15 秒发送心跳注释，每条流在 55 秒后关闭。Key/grant 撤销、账号禁用、项目权限变化或项目/角色归档对已建连接存在最长约 55 秒窗口，重连重新授权，正文读取每次重新检查权限。每用户每项目最多 16 条流、每项目最多 256 条，超限返回 429 和 `Retry-After: 30`（跨域可读取）。
+
+业务帧的 `event` 为 `role.messages.received`；`id` 为 `evt_message_<message_uuid>_<recipient_role_uuid>`；JSON `data` 是 `{eventId, name, timestamp, data}`。内层 `data` 包含 `project_id`、订阅的 `recipient_role_id`、`message_count: 1`、相同的 `first_message_id`/`last_message_id` 和相同的 `first_received_at`/`last_received_at`。广播消息为每条连接填入其订阅角色，同时含 ALL 和具体角色也只发送一次。不携带消息正文或附件。
+
+通知是尽力发送的读取提示，非持久队列，无 ACK、历史事件或重放；写入成功后即使通知失败也返回成功。事件 ID 仅用于去重，不是恢复游标；携带 `Last-Event-ID` 返回 400。
+
+每次初连和重连先建流并等待 ready，同时继续消费通知，再用既有 items 查询按 `recipient_role_id`、`updated_since`、`include_deleted=true` 补读全部分页，不要设置截断结果的 `max_items`。按消息 ID/version 合并去重，完成整轮分页才保存 `sync_until`；中断保留旧检查点，首次无检查点读取完整初始范围。不可先查询再建流，也不可在补读时暂停消费。即使没有事件，也须在每次重连补读或周期补读以恢复丢失提示。
+
+正常结束/网络故障按 1–30 秒指数退避重连，成功后重置；401 更新凭证，429 遵守 Retry-After，403/参数错误先修正。解析须支持 UTF-8 跨块、跨块帧、多行 data，业务数据视为不可信。

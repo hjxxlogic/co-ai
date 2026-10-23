@@ -7,11 +7,10 @@ import { sessionPrincipal } from './web-auth';
 import { grantIdentity, requireOAuthScope, type OAuthIdentity } from './oauth-security';
 import { callbackUrl, webhookPost, WebhookRequestError } from './event-webhook';
 import { timingSafeEqual } from 'node:crypto';
+import { messageEventName as eventName, messageEventFilters as filters, messageEvent as sharedMessageEvent } from './events';
 
-const eventName = 'role.messages.received';
 const lifetimeMs = 24 * 60 * 60 * 1000;
 const cooldownMs = 5 * 60 * 1000;
-const filters = z.object({ project_id: z.uuid(), recipient_role_id: z.uuid() }).strict();
 const delivery = z.object({ mode: z.literal('webhook'), url: z.string().max(2048), secret: z.string().max(100).optional() }).strict();
 const subscription = z.object({ name: z.literal(eventName), arguments: filters, delivery, cursor: z.null().optional(), ttlMs: z.number().int().positive().nullable().optional(), _meta: z.record(z.string(), z.unknown()).optional() }).strict();
 type Subscription = {
@@ -23,15 +22,9 @@ type Subscription = {
 const invalid = (message: string) => new McpError(ErrorCode.InvalidParams, message);
 
 export const messageEvent = {
-  name: eventName,
-  description: 'New messages addressed to an active project role, including ALL broadcasts. Messages are coalesced into a summary; at most one delivery per subscription every five minutes. Read messages using the item tools.',
+  ...sharedMessageEvent,
+  description: 'New messages addressed to an active project role, including ALL broadcasts, excluding the sending role itself. Messages are coalesced into a summary; at most one delivery per subscription every five minutes. Read messages using the item tools.',
   delivery: ['webhook'],
-  inputSchema: { type: 'object', properties: { project_id: { type: 'string', format: 'uuid' }, recipient_role_id: { type: 'string', format: 'uuid' } }, required: ['project_id', 'recipient_role_id'], additionalProperties: false },
-  payloadSchema: { type: 'object', properties: {
-    project_id: { type: 'string' }, recipient_role_id: { type: 'string' }, message_count: { type: 'integer', minimum: 1 },
-    first_message_id: { type: 'string' }, last_message_id: { type: 'string' },
-    first_received_at: { type: 'string' }, last_received_at: { type: 'string' },
-  }, required: ['project_id', 'recipient_role_id', 'message_count', 'first_message_id', 'last_message_id', 'first_received_at', 'last_received_at'], additionalProperties: false },
 };
 
 async function eventPrincipal(c: Context<AppEnv>, oauth: OAuthIdentity | null): Promise<Principal | null> {

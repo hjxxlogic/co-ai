@@ -18,22 +18,33 @@ export class EventsLive {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === '/notify' && request.method === 'POST') {
-      if (new TextEncoder().encode(await request.clone().text()).byteLength > 4096) return new Response(null, { status: 413 });
-      const parsed = noticeSchema.safeParse(await request.json().catch(() => null));
+      const bytes = await request.arrayBuffer();
+      if (bytes.byteLength > 4096) return new Response(null, { status: 413 });
+      let input: unknown;
+      try { input = JSON.parse(new TextDecoder().decode(bytes)); } catch { return new Response(null, { status: 400 }); }
+      const parsed = noticeSchema.safeParse(input);
       if (!parsed.success) return new Response(null, { status: 400 });
       const notice = parsed.data;
+      // Multiple listeners for the same role receive the same frame. Keep this
+      // cache local to the invocation so no state needs restoring after sleep.
+      const frames = new Map<string, string>();
       for (const socket of this.state.getWebSockets()) {
         const filter = socket.deserializeAttachment() as Filter;
         if (socket.readyState !== WebSocket.OPEN || filter.name !== messageEventName || filter.project_id !== notice.project_id ||
             filter.recipient_role_id === notice.sender_role_id ||
             (!notice.recipient_role_ids.includes('ALL') && !notice.recipient_role_ids.includes(filter.recipient_role_id))) continue;
-        const eventId = `evt_message_${notice.message_id}_${filter.recipient_role_id}`;
-        const event = { eventId, name: messageEventName, timestamp: notice.timestamp, data: {
-          project_id: notice.project_id, recipient_role_id: filter.recipient_role_id, message_count: 1,
-          first_message_id: notice.message_id, last_message_id: notice.message_id,
-          first_received_at: notice.timestamp, last_received_at: notice.timestamp,
-        } };
-        try { socket.send(`id: ${eventId}\nevent: ${messageEventName}\ndata: ${JSON.stringify(event)}\n\n`); }
+        let frame = frames.get(filter.recipient_role_id);
+        if (!frame) {
+          const eventId = `evt_message_${notice.message_id}_${filter.recipient_role_id}`;
+          const event = { eventId, name: messageEventName, timestamp: notice.timestamp, data: {
+            project_id: notice.project_id, recipient_role_id: filter.recipient_role_id, message_count: 1,
+            first_message_id: notice.message_id, last_message_id: notice.message_id,
+            first_received_at: notice.timestamp, last_received_at: notice.timestamp,
+          } };
+          frame = `id: ${eventId}\nevent: ${messageEventName}\ndata: ${JSON.stringify(event)}\n\n`;
+          frames.set(filter.recipient_role_id, frame);
+        }
+        try { socket.send(frame); }
         catch { this.webSocketError(socket); }
       }
       return new Response(null, { status: 204 });

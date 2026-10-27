@@ -121,6 +121,22 @@ it('enforces authentication, project/role boundaries, strict parameters, and rej
   expect((await request(path(f.project.id, f.b.id), f.key)).status).toBe(404);
 });
 
+it('rejects invalid and oversized notification bodies without affecting subsequent delivery', async () => {
+  const f = await fixture();
+  const reader = await connect(f.key, f.project.id, f.a.id);
+  const ns = (await mf.getBindings()).EVENTS_LIVE as unknown as DurableObjectNamespace;
+  const stub = ns.get(ns.idFromName(f.project.id));
+  for (const body of ['{', 'null', '{}']) {
+    expect((await stub.fetch('https://events-live/notify', { method: 'POST', body })).status).toBe(400);
+  }
+  // Limits count UTF-8 bytes, not JavaScript characters.
+  expect((await stub.fetch('https://events-live/notify', { method: 'POST', body: '中'.repeat(1366) })).status).toBe(413);
+  expect((await stub.fetch('https://events-live/notify', { method: 'POST', body: ' '.repeat(4096) })).status).toBe(400);
+  const message = await create(f.base + '/items', f.key, { title: 'After invalid notices', kind: 'message' });
+  expect(await next(reader)).toContain(message.id);
+  await reader.cancel();
+});
+
 it('limits real DO connections per user and frees capacity when the Worker bridge is cancelled', async () => {
   const ns = (await mf.getBindings()).EVENTS_LIVE as unknown as DurableObjectNamespace;
   const project = crypto.randomUUID(), role = crypto.randomUUID(), principal = crypto.randomUUID();

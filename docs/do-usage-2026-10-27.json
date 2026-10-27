@@ -1,0 +1,443 @@
+{
+  "queried_at": "2026-10-27T00:54:44.778Z",
+  "window": {
+    "from": "2026-10-20T00:00:00Z",
+    "to_exclusive": "2026-10-27T00:00:00Z"
+  },
+  "namespace": "co-ai_EventsLive",
+  "namespace_id": "d2f82913c3ce407ab1ea939c264fa3ab",
+  "invocations": [
+    {
+      "dimensions": {
+        "date": "2026-10-26",
+        "namespaceId": "d2f82913c3ce407ab1ea939c264fa3ab",
+        "status": "success",
+        "type": "http"
+      },
+      "quantiles": {
+        "cpuTimeP50": 1573,
+        "cpuTimeP99": 5047,
+        "wallTimeP50": 2489,
+        "wallTimeP99": 6553
+      },
+      "sum": {
+        "errors": 0,
+        "requests": 6,
+        "wallTime": 20739
+      }
+    },
+    {
+      "dimensions": {
+        "date": "2026-10-25",
+        "namespaceId": "d2f82913c3ce407ab1ea939c264fa3ab",
+        "status": "success",
+        "type": "http"
+      },
+      "quantiles": {
+        "cpuTimeP50": 1308,
+        "cpuTimeP99": 3010,
+        "wallTimeP50": 1950,
+        "wallTimeP99": 3992
+      },
+      "sum": {
+        "errors": 0,
+        "requests": 13,
+        "wallTime": 27812
+      }
+    },
+    {
+      "dimensions": {
+        "date": "2026-10-24",
+        "namespaceId": "d2f82913c3ce407ab1ea939c264fa3ab",
+        "status": "scriptThrewException",
+        "type": "hibernation"
+      },
+      "quantiles": {
+        "cpuTimeP50": 84,
+        "cpuTimeP99": 84,
+        "wallTimeP50": 32922,
+        "wallTimeP99": 32922
+      },
+      "sum": {
+        "errors": 1,
+        "requests": 1,
+        "wallTime": 32922
+      }
+    },
+    {
+      "dimensions": {
+        "date": "2026-10-26",
+        "namespaceId": "d2f82913c3ce407ab1ea939c264fa3ab",
+        "status": "scriptThrewException",
+        "type": "hibernation"
+      },
+      "quantiles": {
+        "cpuTimeP50": 73,
+        "cpuTimeP99": 73,
+        "wallTimeP50": 12879,
+        "wallTimeP99": 12879
+      },
+      "sum": {
+        "errors": 1,
+        "requests": 1,
+        "wallTime": 12879
+      }
+    },
+    {
+      "dimensions": {
+        "date": "2026-10-25",
+        "namespaceId": "d2f82913c3ce407ab1ea939c264fa3ab",
+        "status": "responseStreamDisconnected",
+        "type": "http"
+      },
+      "quantiles": {
+        "cpuTimeP50": 1666,
+        "cpuTimeP99": 3276,
+        "wallTimeP50": 55126820,
+        "wallTimeP99": 55340576
+      },
+      "sum": {
+        "errors": 1523,
+        "requests": 1523,
+        "wallTime": 83598798309
+      }
+    },
+    {
+      "dimensions": {
+        "date": "2026-10-26",
+        "namespaceId": "d2f82913c3ce407ab1ea939c264fa3ab",
+        "status": "success",
+        "type": "hibernation"
+      },
+      "quantiles": {
+        "cpuTimeP50": 296,
+        "cpuTimeP99": 674,
+        "wallTimeP50": 45376,
+        "wallTimeP99": 310830
+      },
+      "sum": {
+        "errors": 0,
+        "requests": 1517,
+        "wallTime": 72631235
+      }
+    },
+    {
+      "dimensions": {
+        "date": "2026-10-23",
+        "namespaceId": "d2f82913c3ce407ab1ea939c264fa3ab",
+        "status": "responseStreamDisconnected",
+        "type": "http"
+      },
+      "quantiles": {
+        "cpuTimeP50": 331,
+        "cpuTimeP99": 2646,
+        "wallTimeP50": 55082384,
+        "wallTimeP99": 55832200
+      },
+      "sum": {
+        "errors": 716,
+        "requests": 716,
+        "wallTime": 39041201708
+      }
+    },
+    {
+      "dimensions": {
+        "date": "2026-10-23",
+        "namespaceId": "d2f82913c3ce407ab1ea939c264fa3ab",
+        "status": "success",
+        "type": "hibernation"
+      },
+      "quantiles": {
+        "cpuTimeP50": 167,
+        "cpuTimeP99": 435,
+        "wallTimeP50": 45521,
+        "wallTimeP99": 381347
+      },
+      "sum": {
+        "errors": 0,
+        "requests": 707,
+        "wallTime": 40506577
+      }
+    },
+    {
+      "dimensions": {
+        "date": "2026-10-24",
+        "namespaceId": "d2f82913c3ce407ab1ea939c264fa3ab",
+        "status": "success",
+        "type": "http"
+      },
+      "quantiles": {
+        "cpuTimeP50": 341,
+        "cpuTimeP99": 1682,
+        "wallTimeP50": 638,
+        "wallTimeP99": 175046
+      },
+      "sum": {
+        "errors": 0,
+        "requests": 739,
+        "wallTime": 3049621
+      }
+    },
+    {
+      "dimensions": {
+        "date": "2026-10-25",
+        "namespaceId": "d2f82913c3ce407ab1ea939c264fa3ab",
+        "status": "success",
+        "type": "hibernation"
+      },
+      "quantiles": {
+        "cpuTimeP50": 234,
+        "cpuTimeP99": 534,
+        "wallTimeP50": 44001,
+        "wallTimeP99": 211764
+      },
+      "sum": {
+        "errors": 0,
+        "requests": 1523,
+        "wallTime": 67268935
+      }
+    },
+    {
+      "dimensions": {
+        "date": "2026-10-24",
+        "namespaceId": "d2f82913c3ce407ab1ea939c264fa3ab",
+        "status": "success",
+        "type": "hibernation"
+      },
+      "quantiles": {
+        "cpuTimeP50": 173,
+        "cpuTimeP99": 490,
+        "wallTimeP50": 44153,
+        "wallTimeP99": 268906
+      },
+      "sum": {
+        "errors": 0,
+        "requests": 1522,
+        "wallTime": 70780502
+      }
+    },
+    {
+      "dimensions": {
+        "date": "2026-10-25",
+        "namespaceId": "d2f82913c3ce407ab1ea939c264fa3ab",
+        "status": "clientDisconnected",
+        "type": "http"
+      },
+      "quantiles": {
+        "cpuTimeP50": 416,
+        "cpuTimeP99": 1556,
+        "wallTimeP50": 40630240,
+        "wallTimeP99": 156457900
+      },
+      "sum": {
+        "errors": 2,
+        "requests": 2,
+        "wallTime": 197088152
+      }
+    },
+    {
+      "dimensions": {
+        "date": "2026-10-23",
+        "namespaceId": "d2f82913c3ce407ab1ea939c264fa3ab",
+        "status": "scriptThrewException",
+        "type": "hibernation"
+      },
+      "quantiles": {
+        "cpuTimeP50": 72,
+        "cpuTimeP99": 309,
+        "wallTimeP50": 13583,
+        "wallTimeP99": 48728
+      },
+      "sum": {
+        "errors": 5,
+        "requests": 5,
+        "wallTime": 113019
+      }
+    },
+    {
+      "dimensions": {
+        "date": "2026-10-23",
+        "namespaceId": "d2f82913c3ce407ab1ea939c264fa3ab",
+        "status": "success",
+        "type": "http"
+      },
+      "quantiles": {
+        "cpuTimeP50": 542,
+        "cpuTimeP99": 2705,
+        "wallTimeP50": 1653,
+        "wallTimeP99": 3834
+      },
+      "sum": {
+        "errors": 0,
+        "requests": 2,
+        "wallTime": 5487
+      }
+    },
+    {
+      "dimensions": {
+        "date": "2026-10-26",
+        "namespaceId": "d2f82913c3ce407ab1ea939c264fa3ab",
+        "status": "responseStreamDisconnected",
+        "type": "http"
+      },
+      "quantiles": {
+        "cpuTimeP50": 1953,
+        "cpuTimeP99": 4303,
+        "wallTimeP50": 55183356,
+        "wallTimeP99": 55450530
+      },
+      "sum": {
+        "errors": 1528,
+        "requests": 1528,
+        "wallTime": 83973539453
+      }
+    },
+    {
+      "dimensions": {
+        "date": "2026-10-23",
+        "namespaceId": "d2f82913c3ce407ab1ea939c264fa3ab",
+        "status": "scriptThrewException",
+        "type": "http"
+      },
+      "quantiles": {
+        "cpuTimeP50": 45,
+        "cpuTimeP99": 45,
+        "wallTimeP50": 7926700,
+        "wallTimeP99": 7926700
+      },
+      "sum": {
+        "errors": 1,
+        "requests": 1,
+        "wallTime": 7926700
+      }
+    },
+    {
+      "dimensions": {
+        "date": "2026-10-23",
+        "namespaceId": "d2f82913c3ce407ab1ea939c264fa3ab",
+        "status": "clientDisconnected",
+        "type": "http"
+      },
+      "quantiles": {
+        "cpuTimeP50": 524,
+        "cpuTimeP99": 524,
+        "wallTimeP50": 15263949,
+        "wallTimeP99": 15263949
+      },
+      "sum": {
+        "errors": 1,
+        "requests": 1,
+        "wallTime": 15263949
+      }
+    },
+    {
+      "dimensions": {
+        "date": "2026-10-24",
+        "namespaceId": "d2f82913c3ce407ab1ea939c264fa3ab",
+        "status": "responseStreamDisconnected",
+        "type": "http"
+      },
+      "quantiles": {
+        "cpuTimeP50": 435,
+        "cpuTimeP99": 2985,
+        "wallTimeP50": 55102052,
+        "wallTimeP99": 55343110
+      },
+      "sum": {
+        "errors": 1524,
+        "requests": 1524,
+        "wallTime": 83509010881
+      }
+    }
+  ],
+  "periodic": [
+    {
+      "dimensions": {
+        "date": "2026-10-26",
+        "namespaceId": "d2f82913c3ce407ab1ea939c264fa3ab"
+      },
+      "max": {
+        "activeWebsocketConnections": 1,
+        "memoryUsageBytes": 12376600
+      },
+      "sum": {
+        "activeTime": 85573658,
+        "cpuTime": 3516429,
+        "duration": 10.953428224000003,
+        "exceededCpuErrors": 0,
+        "exceededMemoryErrors": 0,
+        "fatalInternalErrors": 0,
+        "inboundWebsocketMsgCount": 0,
+        "outboundWebsocketMsgCount": 1517,
+        "rowsRead": 0,
+        "rowsWritten": 0
+      }
+    },
+    {
+      "dimensions": {
+        "date": "2026-10-25",
+        "namespaceId": "d2f82913c3ce407ab1ea939c264fa3ab"
+      },
+      "max": {
+        "activeWebsocketConnections": 2,
+        "memoryUsageBytes": 12376678
+      },
+      "sum": {
+        "activeTime": 69477486,
+        "cpuTime": 2561821,
+        "duration": 8.893118207999999,
+        "exceededCpuErrors": 0,
+        "exceededMemoryErrors": 0,
+        "fatalInternalErrors": 0,
+        "inboundWebsocketMsgCount": 0,
+        "outboundWebsocketMsgCount": 1519,
+        "rowsRead": 0,
+        "rowsWritten": 0
+      }
+    },
+    {
+      "dimensions": {
+        "date": "2026-10-24",
+        "namespaceId": "d2f82913c3ce407ab1ea939c264fa3ab"
+      },
+      "max": {
+        "activeWebsocketConnections": 1,
+        "memoryUsageBytes": 12377648
+      },
+      "sum": {
+        "activeTime": 85724884,
+        "cpuTime": 1923945,
+        "duration": 10.972785151999998,
+        "exceededCpuErrors": 0,
+        "exceededMemoryErrors": 0,
+        "fatalInternalErrors": 0,
+        "inboundWebsocketMsgCount": 0,
+        "outboundWebsocketMsgCount": 1519,
+        "rowsRead": 0,
+        "rowsWritten": 0
+      }
+    },
+    {
+      "dimensions": {
+        "date": "2026-10-23",
+        "namespaceId": "d2f82913c3ce407ab1ea939c264fa3ab"
+      },
+      "max": {
+        "activeWebsocketConnections": 3,
+        "memoryUsageBytes": 12376076
+      },
+      "sum": {
+        "activeTime": 64478675,
+        "cpuTime": 582906,
+        "duration": 8.2532704,
+        "exceededCpuErrors": 0,
+        "exceededMemoryErrors": 0,
+        "fatalInternalErrors": 0,
+        "inboundWebsocketMsgCount": 0,
+        "outboundWebsocketMsgCount": 706,
+        "rowsRead": 0,
+        "rowsWritten": 0
+      }
+    }
+  ]
+}

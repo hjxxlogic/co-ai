@@ -54,6 +54,8 @@ itemsApi.get('/', async (c) => {
   const filterStatus = c.req.query('status'), filterKind = c.req.query('kind');
   if (filterStatus !== undefined && !status.safeParse(filterStatus).success) throw new HTTPException(400, { message: 'Invalid status' });
   if (filterKind !== undefined && !kind.safeParse(filterKind).success) throw new HTTPException(400, { message: 'Invalid kind' });
+  const includeTotal = c.req.query('include_total') ?? 'true';
+  if (!['true', 'false'].includes(includeTotal)) throw new HTTPException(400, { message: 'include_total must be true or false' });
   const deleted = c.req.query('include_deleted') ?? 'false';
   if (!['true', 'false'].includes(deleted)) throw new HTTPException(400, { message: 'include_deleted must be true or false' });
   const roleId = c.req.query('role_id');
@@ -104,22 +106,30 @@ itemsApi.get('/', async (c) => {
   }
   if (from) { where.push('i.created_at >= ?'); bindings.push(from); }
   if (to) { where.push('i.created_at <= ?'); bindings.push(to); }
+  const indexedSearch = [...q].length >= 3;
+  // CROSS JOIN keeps FTS candidates first instead of scanning the project's items.
+  const itemSource = indexedSearch ? 'items_search CROSS JOIN items i ON i.rowid = items_search.rowid' : 'items i';
   if (q) {
     // Trigram search cannot index terms shorter than three characters.
-    if ([...q].length >= 3) {
-      where.push('i.rowid IN (SELECT rowid FROM items_search WHERE items_search MATCH ?)');
+    if (indexedSearch) {
+      where.push('items_search MATCH ?');
       bindings.push(`"${q.replace(/"/g, '""')}"`);
     }
     where.push('(instr(lower(i.title), lower(?)) > 0 OR instr(lower(i.content), lower(?)) > 0)');
     bindings.push(q, q);
   }
   if (filterTags.length && tagMode === 'any') {
-    where.push(`EXISTS (SELECT 1 FROM json_each(i.tags) t WHERE t.value IN (${filterTags.map(() => '?').join(',')}))`);
-    bindings.push(...filterTags);
+    where.push(`i.id IN (SELECT item_id FROM item_tags WHERE project_id = ? AND tag IN (${filterTags.map(() => '?').join(',')}))`);
+    bindings.push(projectId!, ...filterTags);
   } else {
-    for (const value of filterTags) { where.push('EXISTS (SELECT 1 FROM json_each(i.tags) t WHERE t.value = ?)'); bindings.push(value); }
+    for (const value of filterTags) {
+      where.push('i.id IN (SELECT item_id FROM item_tags WHERE project_id = ? AND tag = ?)');
+      bindings.push(projectId!, value);
+    }
   }
-  const count = await c.env.DB.prepare(`SELECT COUNT(*) AS total FROM items i WHERE ${where.join(' AND ')}`).bind(...bindings).first<{ total: number }>();
+  const count = includeTotal === 'true'
+    ? await c.env.DB.prepare(`SELECT COUNT(*) AS total FROM ${itemSource} WHERE ${where.join(' AND ')}`).bind(...bindings).first<{ total: number }>()
+    : null;
   if (legacyId || (cursor && order === 'id')) { where.push('i.id > ?'); bindings.push(legacyId || cursor!.id); }
   else if (cursor) {
     const comparison = descending ? '<' : '>';
@@ -130,12 +140,12 @@ itemsApi.get('/', async (c) => {
   const pageSize = Math.min(limit, maxItems ? maxItems - seen : limit);
   const direction = descending ? 'DESC' : 'ASC';
   const sort = order === 'id' ? 'i.id ASC' : `${timeColumn} ${direction}, i.id ${direction}`;
-  const { results } = await c.env.DB.prepare(`${selectItem} WHERE ${where.join(' AND ')} ORDER BY ${sort} LIMIT ?`).bind(...bindings, pageSize + 1).all<Row>();
+  const { results } = await c.env.DB.prepare(`${selectItem.replace('FROM items i', `FROM ${itemSource}`)} WHERE ${where.join(' AND ')} ORDER BY ${sort} LIMIT ?`).bind(...bindings, pageSize + 1).all<Row>();
   const data = results.slice(0, pageSize).map(serialize), last = data.at(-1);
   const next = results.length > pageSize && (!maxItems || seen + data.length < maxItems) && last
     ? legacyCursor ? last.id : encodeCursor({ v: 1, fingerprint, snapshot, id: last.id, time: updatedOrder ? last.updated_at : last.created_at, seen: seen + data.length })
     : null;
-  return c.json({ data, next_cursor: next, total_count: count?.total ?? 0, max_items: maxItems, sync_until: polling ? snapshot : null });
+  return c.json({ data, next_cursor: next, total_count: includeTotal === 'true' ? count?.total ?? 0 : null, max_items: maxItems, sync_until: polling ? snapshot : null });
 });
 
 itemsApi.post('/', async (c) => {

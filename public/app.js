@@ -74,10 +74,10 @@ function itemQuery() {
 }
 async function loadItems(append = false) {
   const query = itemQuery();
-  if (append && state.itemsCursor) query.set('after', state.itemsCursor);
+  if (append && state.itemsCursor) { query.set('after', state.itemsCursor); query.set('include_total', 'false'); }
   const page = await api(base() + '/items?' + query);
   state.items = append ? [...state.items, ...page.data] : page.data;
-  state.itemsTotal = page.total_count;
+  if (page.total_count !== null) state.itemsTotal = page.total_count;
   state.itemsCursor = page.next_cursor;
 }
 function roleOptions(selected = '', filter = false) {

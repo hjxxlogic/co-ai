@@ -135,6 +135,17 @@ npm run deploy
 
 迁移和部署命令会修改云端资源，应在正确的 Cloudflare 账户下手动执行。本仓库的 CI 只执行验证，不部署。架构配置参考 [Cloudflare Wrangler 官方文档](https://developers.cloudflare.com/workers/wrangler/configuration/)。
 
+## D1 查询优化维护
+
+迁移 `0015_items_query_performance.sql` 回填标签关联表、建立常用筛选索引，并避免仅更新元数据时重写全文索引。信息列表支持 `include_total=false`，适合轮询和后续翻页；默认返回精确计数。
+
+自定义表的业务字段索引按实际查询热点添加，索引包含 `_id` 以支持游标分页。下面命令先验证表元数据并预览 SQL，增加 `--apply` 才会修改线上数据库；重复执行不会重复创建索引。新建表也可按同样方式维护：
+
+```sh
+node scripts/index-project-filters.mjs --remote --table-id=<表 UUID> --columns=work_id,lesson_key
+node scripts/index-project-filters.mjs --remote --table-id=<表 UUID> --columns=work_id,lesson_key --apply
+```
+
 ## 验证
 
 ```sh

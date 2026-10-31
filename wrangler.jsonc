@@ -8,7 +8,7 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-10-11",
   "compatibility_flags": ["nodejs_compat"],
-  "vars": { "MCP_DEBUG_LOGS": "true" },
+  "vars": { "MCP_DEBUG_LOGS": "false" },
   "durable_objects": { "bindings": [{ "name": "EVENTS_LIVE", "class_name": "EventsLive" }] },
   "migrations": [{ "tag": "v1-events-live", "new_sqlite_classes": ["EventsLive"] }],
   "triggers": { "crons": ["* * * * *"] },

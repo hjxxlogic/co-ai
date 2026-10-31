@@ -80,7 +80,7 @@ beforeAll(async () => {
   const bindings = await mf.getBindings();
   env = { ...bindings, EVENTS_LIVE: { idFromName: (name: string) => name, get: () => ({ fetch: async () => new Response(null, { status: 204 }) }) }, ADMIN_TOKEN: admin, DOCS: { fetch: async (req: Request) => new Response(new URL(req.url).pathname.endsWith('.html') ? '<!doctype html><h1>AI docs</h1><a href="/llm/API.html">API</a>' : 'API docs', { headers: { 'Content-Type': new URL(req.url).pathname.endsWith('.html') ? 'text/html; charset=utf-8' : 'text/plain; charset=utf-8' } }) } } as unknown as Env;
   // D1 exec expects each statement on one line.
-  for (const file of ['0001_initial.sql', '0002_web_management.sql', '0003_roles_and_tags.sql', '0004_password_login.sql', '0005_recipient_roles.sql', '0006_oauth.sql', '0007_project_tables.sql', '0008_attachment_uploads.sql', '0009_mcp_events.sql', '0010_mcp_debug_logs.sql', '0011_items_search.sql', '0012_workflows.sql', '0013_work_state_updated.sql', '0014_work_desc.sql']) {
+  for (const file of ['0001_initial.sql', '0002_web_management.sql', '0003_roles_and_tags.sql', '0004_password_login.sql', '0005_recipient_roles.sql', '0006_oauth.sql', '0007_project_tables.sql', '0008_attachment_uploads.sql', '0009_mcp_events.sql', '0010_mcp_debug_logs.sql', '0011_items_search.sql', '0012_workflows.sql', '0013_work_state_updated.sql', '0014_work_desc.sql', '0015_items_query_performance.sql']) {
     if (file === '0004_password_login.sql') {
       const time = '2025-01-01T00:00:00.000Z';
       await env.DB.batch([
@@ -95,7 +95,7 @@ beforeAll(async () => {
       for (const [table, id] of Object.entries(migrationIds)) migrationRows[table] = (await env.DB.prepare(`SELECT * FROM ${table} WHERE id = ?`).bind(id).first<Record<string, unknown>>())!;
     }
     const sql = await readFile(new URL('../migrations/' + file, import.meta.url), 'utf8');
-    if (file === '0009_mcp_events.sql' || file === '0011_items_search.sql' || file === '0012_workflows.sql') { await env.DB.exec(sql.replace(/\s+/g, ' ').trim()); continue; }
+    if (file === '0009_mcp_events.sql' || file === '0011_items_search.sql' || file === '0012_workflows.sql' || file === '0015_items_query_performance.sql') { await env.DB.exec(sql.replace(/\s+/g, ' ').trim()); continue; }
     await env.DB.exec(sql.replace(/^--.*$/gm, '').split(';').map((s) => s.replace(/\s+/g, ' ').trim()).filter(Boolean).join(';\n') + ';');
   }
 });
@@ -548,6 +548,84 @@ describe('project roles, message TAGs and search windows', () => {
     expect((await (await request(`/api/v1/projects/${id}/roles`, reader)).json() as any).data).toHaveLength(0);
     expect((await (await request(`/api/v1/projects/${id}/roles?include_archived=true`, reader)).json() as any).data).toHaveLength(1);
     expect((await request(`/api/v1/projects/${id}/roles/${role.id}`, owner, 'PATCH', { archived: false, name: '工程师' })).status).toBe(200);
+  });
+
+  it('skips exact counts on request while preserving results, cursors and MCP support', async () => {
+    const { writer, project, base } = await searchFixture('optional-count@test.com');
+    const first = await (await request(base + '?order=newest&limit=1', writer)).json() as any;
+    expect(first.total_count).toBe(4);
+    const queries: string[] = [];
+    const measuredEnv = { ...env, DB: new Proxy(env.DB, {
+      get(target, key) {
+        if (key === 'prepare') return (sql: string) => { queries.push(sql); return target.prepare(sql); };
+        const value = Reflect.get(target, key);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    }) };
+    const path = base + '?order=newest&limit=1&include_total=false&after=' + first.next_cursor;
+    const response = await app.request('https://co-ai.test' + path, { headers: { Authorization: `Bearer ${writer}` } }, measuredEnv);
+    expect(response.status).toBe(200);
+    const next = await response.json() as any;
+    expect(next.total_count).toBeNull(); expect(next.data).toHaveLength(1);
+    expect(next.data[0].id).not.toBe(first.data[0].id);
+    expect(queries.some((sql) => /COUNT\(\*\)/i.test(sql))).toBe(false);
+    const counted = await (await request(path.replace('include_total=false', 'include_total=true'), writer)).json() as any;
+    expect(counted.total_count).toBe(4); expect(counted.data).toEqual(next.data);
+    const result = await mcpTool('get_api_v1_projects_projectId_items', { projectId: project, include_total: false }, mcpBearer(writer));
+    expect(result.status).toBe(200); expect(result.body.total_count).toBeNull(); expect(result.body.data).toHaveLength(4);
+    expect((await request(base + '?include_total=invalid', writer)).status).toBe(400);
+  });
+
+  it('backfills and maintains indexed tags across edits, deletion and project boundaries', async () => {
+    expect(await env.DB.prepare('SELECT tag FROM item_tags WHERE item_id = ?').bind(migrationIds.items).first('tag')).toBe('stable');
+    const { writer, base, records } = await searchFixture('indexed-tags@test.com');
+    const other = await searchFixture('indexed-tags-other@test.com');
+    const item = records[0];
+    expect((await request(`${base}/${item.id}`, writer, 'PATCH', { version: 1, tags: ['Replacement'] })).status).toBe(200);
+    expect((await request(`${base}/${item.id}`, writer, 'PATCH', { version: 1, tags: ['stale'] })).status).toBe(409);
+    const tags = await env.DB.prepare('SELECT tag FROM item_tags WHERE item_id = ?').bind(item.id).all();
+    expect(tags.results).toEqual([{ tag: 'replacement' }]);
+    expect((await (await request(base + '?tag=replacement', writer)).json() as any).data.map((i: any) => i.id)).toEqual([item.id]);
+    expect((await (await request(other.base + '?tag=replacement', other.writer)).json() as any).data).toEqual([]);
+    expect((await request(`${base}/${item.id}`, writer, 'DELETE', { version: 2 })).status).toBe(204);
+    expect((await (await request(base + '?tag=replacement', writer)).json() as any).data).toEqual([]);
+    expect((await (await request(base + '?tag=replacement&include_deleted=true', writer)).json() as any).data[0].id).toBe(item.id);
+    await env.DB.prepare('DELETE FROM items WHERE id = ?').bind(item.id).run();
+    expect(await env.DB.prepare('SELECT item_id FROM item_tags WHERE item_id = ?').bind(item.id).first()).toBeNull();
+  });
+
+  it('avoids rewriting FTS for metadata-only or unchanged-content edits', async () => {
+    const owner = await provision('fts-metadata@test.com'), project = await createProject(owner);
+    const base = `/api/v1/projects/${project}/items`;
+    const item = (await (await request(base, owner, 'POST', { title: 'Original searchable title', content: 'Original searchable content' })).json() as any).data;
+    const snapshot = async () => (await env.DB.prepare('SELECT id, hex(block) AS block FROM items_search_data ORDER BY id').all()).results;
+    const before = await snapshot();
+    expect((await request(`${base}/${item.id}`, owner, 'PATCH', { version: 1, status: 'done', tags: ['indexed'] })).status).toBe(200);
+    expect(await snapshot()).toEqual(before);
+    expect((await request(`${base}/${item.id}`, owner, 'PATCH', { version: 2, title: item.title, content: item.content })).status).toBe(200);
+    expect(await snapshot()).toEqual(before);
+    expect((await request(`${base}/${item.id}`, owner, 'PATCH', { version: 3, content: 'Replacement searchable content' })).status).toBe(200);
+    expect((await (await request(base + '?q=Replacement', owner)).json() as any).data[0].id).toBe(item.id);
+  });
+
+  it('uses FTS candidates and live-item indexes for selective queries', async () => {
+    const { writer, project, base, records } = await searchFixture('query-plan@test.com');
+    const sql: string[] = [];
+    const localEnv = { ...env, DB: new Proxy(env.DB, { get(target, key) {
+      if (key === 'prepare') return (query: string) => { sql.push(query); return target.prepare(query); };
+      const value = Reflect.get(target, key); return typeof value === 'function' ? value.bind(target) : value;
+    } }) };
+    const response = await app.request(`https://co-ai.test${base}?q=Middle&tag=api&kind=message`, { headers: { Authorization: `Bearer ${writer}` } }, localEnv);
+    expect(response.status).toBe(200);
+    expect((await response.json() as any).data.map((i: any) => i.id)).toEqual([records[1].id]);
+    const search = sql.find((query) => query.startsWith('SELECT COUNT(*)'))!;
+    const params = [project, new Date().toISOString(), 'message', '"Middle"', 'Middle', 'Middle', project, 'api'];
+    const plan = await env.DB.prepare('EXPLAIN QUERY PLAN ' + search).bind(...params).all<{ detail: string }>();
+    const details = plan.results.map((row) => row.detail);
+    expect(details[0]).toContain('SCAN items_search VIRTUAL TABLE');
+    expect(details.some((detail) => detail.includes('INTEGER PRIMARY KEY'))).toBe(true);
+    const countPlan = await env.DB.prepare('EXPLAIN QUERY PLAN SELECT COUNT(*) FROM items WHERE project_id = ? AND kind = ? AND created_at <= ? AND deleted_at IS NULL').bind(project, 'message', new Date().toISOString()).all<{ detail: string }>();
+    expect(countPlan.results[0].detail).toContain('USING INDEX items_live_kind_created');
   });
 
   it('combines exact roles/TAGs, any/all TAG matching, kind and inclusive timezone-aware ranges', async () => {

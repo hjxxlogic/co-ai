@@ -948,8 +948,9 @@
                       ]
                     },
                     "total_count": {
-                      "type": "integer",
-                      "minimum": 0
+                      "type": ["integer", "null"],
+                      "minimum": 0,
+                      "description": "Exact matched count, or null when include_total=false."
                     },
                     "max_items": {
                       "type": [
@@ -1170,6 +1171,12 @@
               "format": "date-time"
             },
             "description": "Inclusive updated_at lower bound; timezone required. Finds edits to older items. Defaults to updated_oldest ordering. Poll all pages without max_items, then reuse sync_until as the next inclusive boundary and deduplicate by item ID/version. Include deleted items to observe tombstones."
+          },
+          {
+            "name": "include_total",
+            "in": "query",
+            "description": "Calculate exact total_count (default true). Set false for polling or subsequent pages to skip counting; total_count is then null. Does not affect cursor compatibility.",
+            "schema": { "type": "boolean", "default": true }
           }
         ],
         "security": [

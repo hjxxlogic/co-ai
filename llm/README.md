@@ -199,7 +199,7 @@ curl "$BASE_URL/api/v1/projects/$PROJECT_ID/items" \
 
 单对象：`{"data": {...}}`。列表：`{"data": [...], "next_cursor": "...或 null"}`。信息列表另含 `total_count`、`max_items` 和 `sync_until`（更新时间查询的固定上界，其他查询为 `null`）。
 
-信息列表支持 `include_total=false`，跳过完整匹配计数并返回 `total_count: null`；默认 `true` 保持精确计数。轮询、同步及后续翻页建议设为 `false`，仅需要展示总数时计算；该参数可以在翻页期间切换，不影响游标。
+信息列表支持 `include_total=false`，跳过完整匹配计数并返回 `total_count: null`；REST 默认 `true` 保持精确计数；MCP 信息列表工具默认 `false`，需要总数时显式传 `include_total=true`。轮询、同步及后续翻页建议设为 `false`，仅需要展示总数时计算；该参数可以在翻页期间切换，不影响游标。
 
 错误：`{"error":{"code":409,"message":"Version conflict; read the item and retry"}}`。
 

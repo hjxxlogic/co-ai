@@ -80,7 +80,7 @@ beforeAll(async () => {
   const bindings = await mf.getBindings();
   env = { ...bindings, EVENTS_LIVE: { idFromName: (name: string) => name, get: () => ({ fetch: async () => new Response(null, { status: 204 }) }) }, ADMIN_TOKEN: admin, DOCS: { fetch: async (req: Request) => new Response(new URL(req.url).pathname.endsWith('.html') ? '<!doctype html><h1>AI docs</h1><a href="/llm/API.html">API</a>' : 'API docs', { headers: { 'Content-Type': new URL(req.url).pathname.endsWith('.html') ? 'text/html; charset=utf-8' : 'text/plain; charset=utf-8' } }) } } as unknown as Env;
   // D1 exec expects each statement on one line.
-  for (const file of ['0001_initial.sql', '0002_web_management.sql', '0003_roles_and_tags.sql', '0004_password_login.sql', '0005_recipient_roles.sql', '0006_oauth.sql', '0007_project_tables.sql', '0008_attachment_uploads.sql', '0009_mcp_events.sql', '0010_mcp_debug_logs.sql', '0011_items_search.sql', '0012_workflows.sql', '0013_work_state_updated.sql', '0014_work_desc.sql', '0015_items_query_performance.sql']) {
+  for (const file of ['0001_initial.sql', '0002_web_management.sql', '0003_roles_and_tags.sql', '0004_password_login.sql', '0005_recipient_roles.sql', '0006_oauth.sql', '0007_project_tables.sql', '0008_attachment_uploads.sql', '0009_mcp_events.sql', '0010_mcp_debug_logs.sql', '0011_items_search.sql', '0012_workflows.sql', '0013_work_state_updated.sql', '0014_work_desc.sql', '0015_items_query_performance.sql', '0016_works_project_id.sql']) {
     if (file === '0004_password_login.sql') {
       const time = '2025-01-01T00:00:00.000Z';
       await env.DB.batch([
@@ -225,6 +225,13 @@ describe('workflow templates and works', () => {
     for (const work of works.slice(0, 2)) {
       expect((await request(`${base}/works/${work.id}/transitions`, owner, 'POST', { version: 1, to_state: 'review' })).status).toBe(200);
     }
+    const plan = await env.DB.prepare('EXPLAIN QUERY PLAN SELECT * FROM works WHERE project_id = ? AND id > ? ORDER BY id LIMIT ?').bind(project, '', 2).all<{ detail: string }>();
+    expect(plan.results.some(row => row.detail.includes('works_project_id'))).toBe(true);
+    expect(plan.results.some(row => row.detail.includes('TEMP B-TREE'))).toBe(false);
+    const unfiltered = await (await request(`${base}/works?limit=2`, owner)).json() as any;
+    const remainder = await (await request(`${base}/works?limit=2&after=${unfiltered.next_cursor}`, owner)).json() as any;
+    expect([...unfiltered.data, ...remainder.data].map((work: any) => work.id)).toEqual(works.map(work => work.id).sort());
+    expect(remainder.next_cursor).toBeNull();
     const times = ['2026-10-01T00:00:00.000Z', '2026-10-02T00:00:00.000Z', '2026-10-02T00:00:00.000Z'];
     for (let i = 0; i < works.length; i++) await env.DB.prepare('UPDATE works SET updated_at = ? WHERE id = ?').bind(times[i], works[i].id).run();
     const boundary = await request(`${base}/works?state=review&updated_since=2026-10-02T08%3A00%3A00%2B08%3A00&updated_until=2026-10-02T00%3A00%3A00Z`, owner);
@@ -573,6 +580,10 @@ describe('project roles, message TAGs and search windows', () => {
     expect(counted.total_count).toBe(4); expect(counted.data).toEqual(next.data);
     const result = await mcpTool('get_api_v1_projects_projectId_items', { projectId: project, include_total: false }, mcpBearer(writer));
     expect(result.status).toBe(200); expect(result.body.total_count).toBeNull(); expect(result.body.data).toHaveLength(4);
+    const defaultMcp = await mcpTool('get_api_v1_projects_projectId_items', { projectId: project }, mcpBearer(writer));
+    expect(defaultMcp.body.total_count).toBeNull(); expect(defaultMcp.body.data).toHaveLength(4);
+    const countedMcp = await mcpTool('get_api_v1_projects_projectId_items', { projectId: project, include_total: true }, mcpBearer(writer));
+    expect(countedMcp.body.total_count).toBe(4);
     expect((await request(base + '?include_total=invalid', writer)).status).toBe(400);
   });
 

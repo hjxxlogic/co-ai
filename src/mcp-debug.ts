@@ -181,5 +181,10 @@ export const mcpDebug: MiddlewareHandler<AppEnv> = async (c, next) => {
 };
 
 export async function cleanupMcpDebugLogs(env: Env) {
-  await env.DB.prepare('DELETE FROM mcp_debug_logs WHERE id IN (SELECT id FROM mcp_debug_logs WHERE expires_at <= ? LIMIT 500)').bind(Date.now()).run();
+  const now = Date.now();
+  // Five bounded batches preserve the previous per-minute cleanup capacity.
+  for (let batch = 0; batch < 5; batch++) {
+    const result = await env.DB.prepare('DELETE FROM mcp_debug_logs WHERE id IN (SELECT id FROM mcp_debug_logs WHERE expires_at <= ? ORDER BY expires_at LIMIT 500)').bind(now).run();
+    if (result.meta.changes < 500) break;
+  }
 }

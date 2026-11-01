@@ -31,6 +31,20 @@ async function logged(id: string) {
 const request = (message: unknown, additional: Record<string, string> = {}) => app.request('https://co-ai.test/mcp', { method: 'POST', headers: { ...headers, ...additional }, body: JSON.stringify(message) }, env);
 
 describe('MCP debug capture', () => {
+  it('drains full cleanup batches, stops on a short batch and bounds backlog work', async () => {
+    const run = vi.fn().mockResolvedValue({ meta: { changes: 500 } });
+    const bind = vi.fn(() => ({ run }));
+    const prepare = vi.fn(() => ({ bind }));
+    const cleanupEnv = { DB: { prepare } } as unknown as Env;
+    await cleanupMcpDebugLogs(cleanupEnv);
+    expect(run).toHaveBeenCalledTimes(5);
+    expect(new Set(bind.mock.calls.map(args => (args as unknown[])[0])).size).toBe(1);
+    run.mockClear();
+    run.mockResolvedValueOnce({ meta: { changes: 500 } }).mockResolvedValueOnce({ meta: { changes: 1 } });
+    await cleanupMcpDebugLogs(cleanupEnv);
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
   it('records full requests and JSON responses with a shared identifier and redacts credentials', async () => {
     const response = await request({ jsonrpc: '2.0', id: 7, method: 'ping', params: { secret: 'private-webhook-secret' } }, { 'X-Api-Secret': 'custom-header-secret' });
     expect(await response.json()).toEqual({ jsonrpc: '2.0', id: 7, result: {} });

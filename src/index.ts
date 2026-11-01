@@ -261,8 +261,8 @@ project.route('/tables', projectTables);
 app.route('/api/v1/projects/:projectId', project);
 app.route('/mcp', mcpApi(async (request, env) => app.request(request, undefined, env)));
 export default Object.assign(app, {
-  scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
+  scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext) {
     ctx.waitUntil(deliverMessageEvents(env));
-    ctx.waitUntil(cleanupMcpDebugLogs(env));
+    if (Math.floor(controller.scheduledTime / 60_000) % 5 === 0) ctx.waitUntil(cleanupMcpDebugLogs(env));
   },
 });

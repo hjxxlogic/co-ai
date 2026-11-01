@@ -8,6 +8,7 @@ interface Parameter {
   required?: boolean;
   description?: string;
   schema: Schema;
+  'x-mcp-default'?: unknown;
 }
 interface Operation {
   'x-mcp-tool'?: boolean;
@@ -49,6 +50,9 @@ export const restTools: RestTool[] = Object.entries(openapi.paths).flatMap(([pat
     const required: string[] = [];
     for (const parameter of parameters) {
       properties[parameter.name] = { ...resolveSchema(parameter.schema) as Schema, ...(parameter.description ? { description: parameter.description } : {}) };
+      if (parameter['x-mcp-default'] !== undefined) {
+        properties[parameter.name] = { ...properties[parameter.name], default: parameter['x-mcp-default'] };
+      }
       if (parameter.required) required.push(parameter.name);
     }
     const jsonBody = operation.requestBody?.content['application/json'];

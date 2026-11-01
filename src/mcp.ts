@@ -62,7 +62,7 @@ async function callRest(c: Context<AppEnv>, dispatch: Dispatch, entry: RestTool,
   }
   const url = new URL(path, c.req.url);
   for (const parameter of entry.parameters.filter((parameter) => parameter.in === 'query')) {
-    const value = args[parameter.name];
+    const value = args[parameter.name] === undefined ? parameter['x-mcp-default'] : args[parameter.name];
     if (value !== undefined) {
       for (const item of Array.isArray(value) ? value : [value]) url.searchParams.append(parameter.name, String(item));
     }

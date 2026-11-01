@@ -1174,8 +1174,9 @@
           },
           {
             "name": "include_total",
+            "x-mcp-default": false,
             "in": "query",
-            "description": "Calculate exact total_count (default true). Set false for polling or subsequent pages to skip counting; total_count is then null. Does not affect cursor compatibility.",
+            "description": "Calculate exact total_count (REST default true; MCP default false). Pass true explicitly when a total is needed; false returns null. Does not affect cursor compatibility.",
             "schema": { "type": "boolean", "default": true }
           }
         ],

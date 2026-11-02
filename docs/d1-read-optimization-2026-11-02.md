@@ -1,6 +1,6 @@
 # D1 普通倒序分页读取优化（2026-11-02）
 
-状态：本地实现，未部署；无需数据库迁移。
+状态：已于 UTC 2026-11-02 06:53 部署到生产；无需数据库迁移。
 
 ## 问题与实现
 
@@ -22,3 +22,13 @@
 - 容器内完整 `npm test -- --silent`：8 个文件、93 项通过，包括读取量和三页快照回归。
 - `npm run build` 的 Worker 打包 dry run 通过。
 - `git diff --check` 通过。
+
+## 生产发布
+
+- 实现提交：`c9bb0e2`（`perf: seek newest item pages from cursor bounds`）。
+- Worker：`co-ai`，域名 `co-ai.xlogic.cc`，账号与 `wrangler.jsonc` 一致。
+- 版本：`2f60ee4b-15f8-4c99-8bcc-bcdb3411912c`，部署列表确认承接 100% 流量，部署时间 `2026-11-02T06:53:02.419189Z`。
+- Cron 保持 `* * * * *`，`MCP_DEBUG_LOGS` 保持 `false`。
+- `/health` 返回 HTTP 200 和 `{"status":"ok"}`。
+- 使用临时项目只读 Key 验证 note 倒序分页，每页 1 条：连续两页没有重复，第二页 ID 与直接 D1 查询一致；总数均为 4,176；`include_total=false` 返回相同条目且总数为 null；下一页游标保留原快照；未认证请求返回 401。
+- 临时 Key 已删除，并查询确认不存在；未创建或修改业务条目。当前网络有间歇性连接/响应超时，分页验证通过有限重试完成。公开文档探测超时，未将其计为验证通过。

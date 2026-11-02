@@ -688,6 +688,7 @@ describe('project roles, message TAGs and search windows', () => {
     expect(first.next_cursor).toBeTruthy();
     const second = await (await request(base + '?max_items=3&limit=2&after=' + first.next_cursor, writer)).json() as any;
     expect(second.data.map((v: any) => v.id)).toEqual([sorted[2].id]); expect(second.next_cursor).toBeNull();
+    expect(second.total_count).toBe(4);
     expect((await request(base + '?max_items=3&limit=2&tag=api&after=' + first.next_cursor, writer)).status).toBe(400);
     const oldest = await (await request(base + '?order=oldest&limit=1', writer)).json() as any;
     expect(oldest.data[0].id).toBe(records[0].id);
@@ -695,6 +696,58 @@ describe('project roles, message TAGs and search windows', () => {
     expect(next.data[0].id).toBe(sorted[2].id);
     const single = await (await request(base + '?max_items=1', writer)).json() as any;
     expect(single.data.map((v: any) => v.id)).toEqual([records[3].id]); expect(single.next_cursor).toBeNull();
+  });
+
+  it('seeks deep newest pages without rescanning newer items or shrinking the snapshot count', async () => {
+    const { writer, base, records } = await searchFixture('newest-seek@test.com');
+    const inserted = Array.from({ length: 120 }, (_, index) => ({
+      id: crypto.randomUUID(), time: new Date(Date.UTC(2025, 0, 1, 0, index)).toISOString(),
+    }));
+    await env.DB.batch(inserted.map(({ id, time }) => env.DB.prepare(
+      `INSERT INTO items (id, project_id, title, content, kind, created_by, updated_by, created_at, updated_at)
+       SELECT ?, project_id, 'Page seek fixture', '', 'message', created_by, updated_by, ?, ? FROM items WHERE id = ?`,
+    ).bind(id, time, time, records[0].id)));
+    const query = base + '?order=newest&kind=message&limit=100';
+    const first = await (await request(query, writer)).json() as any;
+    expect(first.total_count).toBe(123);
+    expect(first.data.map((item: any) => item.id)).toEqual(inserted.slice(20).reverse().map(item => item.id));
+    const snapshot = JSON.parse(atob(first.next_cursor.replace(/-/g, '+').replace(/_/g, '/'))).snapshot as string;
+    const future = (await (await request(base, writer, 'POST', { title: 'After snapshot', kind: 'message' })).json() as any).data;
+    await env.DB.prepare('UPDATE items SET created_at = ? WHERE id = ?').bind('2099-01-01T00:00:00.000Z', future.id).run();
+    const captured: { sql: string; params: Parameters<D1PreparedStatement['bind']> }[] = [];
+    const measuredEnv = { ...env, DB: new Proxy(env.DB, { get(target, key) {
+      if (key === 'prepare') return (sql: string) => {
+        const statement = target.prepare(sql);
+        return new Proxy(statement, { get(target, key) {
+          if (key === 'bind') return (...params: Parameters<D1PreparedStatement['bind']>) => {
+            if (sql.startsWith('SELECT i.*')) captured.push({ sql, params });
+            return target.bind(...params);
+          };
+          const value = Reflect.get(target, key); return typeof value === 'function' ? value.bind(target) : value;
+        } });
+      };
+      const value = Reflect.get(target, key); return typeof value === 'function' ? value.bind(target) : value;
+    } }) };
+    const response = await app.request('https://co-ai.test' + query.replace('limit=100', 'limit=10') + '&after=' + first.next_cursor, { headers: { Authorization: `Bearer ${writer}` } }, measuredEnv);
+    expect(response.status).toBe(200);
+    const second = await response.json() as any;
+    expect(second.total_count).toBe(123);
+    expect(second.next_cursor).toBeTruthy();
+    expect(JSON.parse(atob(second.next_cursor.replace(/-/g, '+').replace(/_/g, '/'))).snapshot).toBe(snapshot);
+    expect(second.data.map((item: any) => item.id)).toEqual(inserted.slice(10, 20).reverse().map(item => item.id));
+    const third = await (await request(query + '&after=' + second.next_cursor, writer)).json() as any;
+    expect(third.total_count).toBe(123);
+    expect(third.next_cursor).toBeNull();
+    const older = records.filter(item => item.kind === 'message').sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id));
+    expect(third.data.map((item: any) => item.id)).toEqual([...inserted.slice(0, 10).reverse(), ...older].map(item => item.id));
+    expect(captured).toHaveLength(1);
+    const { sql, params } = captured[0];
+    const optimized = await env.DB.prepare(sql).bind(...params).all();
+    const originalParams = [...params];
+    originalParams[1] = snapshot;
+    const original = await env.DB.prepare(sql).bind(...originalParams).all();
+    expect(optimized.results).toEqual(original.results);
+    expect(original.meta.rows_read - optimized.meta.rows_read).toBeGreaterThanOrEqual(first.data.length - 1);
   });
 
   it('rejects malformed search parameters and leaves role/TAG metadata untouched on stale updates', async () => {

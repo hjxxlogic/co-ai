@@ -130,6 +130,9 @@ itemsApi.get('/', async (c) => {
   const count = includeTotal === 'true'
     ? await c.env.DB.prepare(`SELECT COUNT(*) AS total FROM ${itemSource} WHERE ${where.join(' AND ')}`).bind(...bindings).first<{ total: number }>()
     : null;
+  // Seek from the cursor instead of rescanning newer rows under the snapshot bound.
+  // Keep the original snapshot for counts and subsequent cursors.
+  if (cursor && order === 'newest' && cursor.time < snapshot) bindings[1] = cursor.time;
   if (legacyId || (cursor && order === 'id')) { where.push('i.id > ?'); bindings.push(legacyId || cursor!.id); }
   else if (cursor) {
     const comparison = descending ? '<' : '>';

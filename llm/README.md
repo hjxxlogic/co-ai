@@ -114,6 +114,8 @@ MCP 连接器本身只传递 JSON 工具参数。如果 Grok 的文件环境不�
 
 REST API 和 MCP 均支持本站 OAuth 授权码流程，必须使用 S256 PKCE。API Key 仍可使用；OAuth 客户端无需获取用户的 API Key 或密码。支持 OAuth 的 MCP 客户端可只配置 `/mcp` 地址，连接时根据 HTTP `401` 的 `WWW-Authenticate` 完成发现、客户端注册和浏览器授权。未认证或凭据无效的 GET SSE、POST 初始化和工具目录请求均返回 `401`，不会先显示匿名连接成功。HTTP `/health`、`/llm` 文档和 OAuth 发现元数据仍公开。
 
+网站可选 Cloudflare Access 邮箱自动登录。MCP 客户端继续使用现有 API Key 或本站 OAuth；Cloudflare Access JWT 不代替 MCP 凭据。站点管理员在 Access 侧放行 `/mcp`、`/llm`、`/oauth`、`/api`、`/.well-known` 五组路径及其子路径；OAuth 授权页资源统一位于 `/oauth/assets/`。网站自动登录入口 `/auth/access-login` 继续受 Access 保护。具体配置见仓库 README 的「Cloudflare Access 邮箱登录」。
+
 | 端点 | 用途 |
 | --- | --- |
 | `GET /.well-known/oauth-authorization-server` | 授权服务器元数据、S256 支持和端点发现 |

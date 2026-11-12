@@ -14,6 +14,11 @@ function toast(message, error = false) {
   toastTimer = setTimeout(() => { toastBox.hidden = true; }, 6000);
 }
 const messages = { 'Username already exists': '用户名已被使用', 'Current password is incorrect': '当前密码不正确', 'Too many login attempts; try again in 15 minutes': '登录尝试过多，请在 15 分钟后重试', 'Credentials changed; refresh and retry': '登录信息已更改，请刷新后重试', 'Email already exists': '这个邮箱已经存在', 'Version conflict; read the item and retry': '信息已被其他协作者更新。请关闭编辑框、刷新后重新合并。', 'Invalid credentials': '登录凭据不正确', 'Invalid credentials; use an active user key': '请使用有效的用户 Key 登录，项目 Key 无法登录工作台', 'Version conflict; read the row and retry': '记录已被其他协作者更新，请刷新后重新编辑', 'Table name already exists': '项目中已存在同名数据表', 'Read-only API key': '此 Key 只有只读权限', 'Same-origin request required': '请求来源不匹配，请从本站重新登录' };
+Object.assign(messages, {
+  'Invalid Cloudflare Access identity': 'Cloudflare 登录已失效，请刷新页面重新登录',
+  'Cloudflare Access email has no active account': '此邮箱尚未关联可用账号，请联系管理员',
+  'Cloudflare Access is not configured correctly': 'Cloudflare 登录配置不完整，请联系管理员',
+});
 async function api(path, options = {}) {
   const headers = { ...options.headers };
   let body = options.body;
@@ -22,10 +27,12 @@ async function api(path, options = {}) {
   if (res.status === 204) return null;
   const data = await res.json();
   if (!res.ok) {
-    if (res.status === 401 && path !== '/api/web/login') {
+    if (res.status === 401 && path !== '/api/web/login' && path !== '/api/web/session') {
       state.session = null; state.project = null; dialog.close(); dialog.replaceChildren(); render();
     }
-    throw new Error(messages[data.error?.message] ?? (res.status === 401 ? '会话已失效，请重新登录' : data.error?.message ?? '请求失败'));
+    const error = new Error(messages[data.error?.message] ?? (res.status === 401 ? '会话已失效，请重新登录' : data.error?.message ?? '请求失败'));
+    error.status = res.status;
+    throw error;
   }
   return data;
 }
@@ -160,7 +167,14 @@ async function action(button) {
   switch (button.dataset.action) {
     case 'close': dialog.close(); break;
     case 'home': state.query = ''; await loadHome(); break;
-    case 'logout': await api('/api/web/logout', { method: 'POST' }); state.session = null; state.project = null; dialog.close(); render(); break;
+    case 'logout': {
+      const accessLogin = state.session.auth_method === 'cloudflare_access';
+      await api('/api/web/logout', { method: 'POST' });
+      state.session = null; state.project = null; dialog.close();
+      if (accessLogin) location.assign('/cdn-cgi/access/logout');
+      else render();
+      break;
+    }
     case 'open-project': await loadProject(id); break;
     case 'tab': await loadProject(state.project.id, button.dataset.tab); break;
     case 'refresh': await loadProject(state.project.id, state.tab); break;
@@ -358,5 +372,18 @@ document.addEventListener('input', (event) => {
   }
 });
 dialog.addEventListener('close', () => { if (!dialog.open) dialog.replaceChildren(); });
-try { state.session = (await api('/api/web/session')).data; await loadHome(); }
-catch (error) { render(); if (state.session) toast(error.message, true); }
+async function restoreSession() {
+  let current = null;
+  try { current = (await api('/api/web/session')).data; }
+  catch (error) { if (error.status !== 401) throw error; }
+  if (!current || current.auth_method === 'cloudflare_access') {
+    const access = await api('/auth/access-login', { method: 'POST' });
+    if (access) current = (await api('/api/web/session')).data;
+  }
+  return current;
+}
+try {
+  state.session = await restoreSession();
+  if (state.session) await loadHome();
+  else render();
+} catch (error) { render(); toast(error.message, true); }

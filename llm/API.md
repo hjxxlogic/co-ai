@@ -193,6 +193,7 @@ Authorization: Bearer API_KEY
 浏览器接口使用安全会话 Cookie；所有写入必须提供同源 `Origin`。管理员登录仍使用管理员令牌，AI 使用项目 Bearer Key。
 
 - `POST /api/web/login`：Key 登录为 `{role: "user" | "admin", credential}`；用户名密码登录为 `{role: "user", username, password}`。
+- `POST /auth/access-login`：可选的 Cloudflare Access 邮箱登录，位于 `/api` 之外并保留 Access 保护，便于整组放行 `/api`；无需正文。仅信任验证过签名、issuer、audience、有效期且含邮箱的用户应用 JWT（`Cf-Access-Jwt-Assertion`），按邮箱忽略大小写匹配已启用用户，不注册新用户、不授予管理员权限。成功 `200` 并设置安全会话 Cookie；未启用或没有 JWT 时返回 `204`，继续原登录流程；凭据无效返回 `401`，邮箱未匹配启用用户返回 `403`，配置不完整返回 `503`。会话最长 24 小时，且不超过 JWT 有效期；邮箱或 Access 配置变更会使会话失效。`GET /api/web/session` 为此类会话额外返回 `data.auth_method: "cloudflare_access"`；网页退出后还会访问 `/cdn-cgi/access/logout` 退出 Access。此端点不作为 MCP 工具提供，Access 请求头不直接授予 REST/MCP 权限。
 - `PUT /api/web/credentials`：用户会话提交 `{username, password, current_password?}`。用户名为 3–64 位字母、数字、点、下划线或连字符，忽略大小写；新密码为 12–256 字符。已有密码时必须校验当前密码。成功 `204`，原密码登录会话失效；首次设置可使用用户 Key 登录会话。
 - `POST /api/web/reset-key`：用户会话重置自己的用户管理 Key，成功 `201` 返回新 Key，旧用户管理 Key 和相应登录会话失效，密码登录会话保留。
 

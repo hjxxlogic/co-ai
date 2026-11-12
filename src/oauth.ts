@@ -173,7 +173,7 @@ oauthApi.get('/authorize', async (c) => {
     .bind(id, registered.id, input.redirect_uri, resource, scope, input.state ?? null, input.code_challenge, expiresIn(600)).run();
   c.header('Referrer-Policy', 'no-referrer');
   c.header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
-  return c.html(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>co-ai · 应用授权</title><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/oauth.css"><script src="/oauth.js" type="module"></script></head><body><main id="oauth-app" class="oauth-page" data-request="${id}"><section class="card"><h1>co-ai 应用授权</h1><p>正在读取授权请求…</p></section></main></body></html>`);
+  return c.html(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>co-ai · 应用授权</title><link rel="stylesheet" href="/oauth/assets/styles.css"><link rel="stylesheet" href="/oauth/assets/oauth.css"><script src="/oauth/assets/oauth.js" type="module"></script></head><body><main id="oauth-app" class="oauth-page" data-request="${id}"><section class="card"><h1>co-ai 应用授权</h1><p>正在读取授权请求…</p></section></main></body></html>`);
 });
 
 oauthApi.get('/requests/:requestId', async (c) => {

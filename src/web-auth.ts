@@ -7,28 +7,34 @@ import { digest, resetUserKey } from './security';
 import { body } from './http';
 import { usernameField, passwordField, verifyPassword, hashPassword, passwordActor, checkUsername } from './passwords';
 import { oauthIdentity, requireOAuthScope } from './oauth-security';
+import { accessConfigHash, accessIdentity } from './cloudflare-access';
 
 const cookieName = (_c: Context<AppEnv>) => '__Host-coai_session';
 const cookieOptions = (_c: Context<AppEnv>) => ({ path: '/', httpOnly: true, secure: true, sameSite: 'Strict' as const });
 
 export const csrfGuard: MiddlewareHandler<AppEnv> = async (c, next) => {
-  if (!['GET', 'HEAD', 'OPTIONS'].includes(c.req.method) && (getCookie(c, cookieName(c)) || c.req.path.startsWith('/api/web/'))) {
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(c.req.method) && (getCookie(c, cookieName(c)) || c.req.path.startsWith('/api/web/') || c.req.path === '/auth/access-login')) {
     if (c.req.header('Origin') !== new URL(c.req.url).origin) throw new HTTPException(403, { message: 'Same-origin request required' });
   }
   await next();
 };
 
-export type Session = { role: 'admin' | 'user'; key_id: string | null; admin_hash: string | null; password_hash: string | null };
+export type Session = { role: 'admin' | 'user'; key_id: string | null; admin_hash: string | null; password_hash: string | null; access_email: string | null; access_config_hash: string | null };
 export async function session(c: Context<AppEnv>): Promise<Session | null> {
   const token = getCookie(c, cookieName(c));
   if (!token) return null;
-  return c.env.DB.prepare('SELECT role, key_id, admin_hash, password_hash FROM web_sessions WHERE token_hash = ? AND expires_at > ?')
+  return c.env.DB.prepare('SELECT role, key_id, admin_hash, password_hash, access_email, access_config_hash FROM web_sessions WHERE token_hash = ? AND expires_at > ?')
     .bind(await digest(token), new Date().toISOString()).first<Session>();
 }
 
 export async function sessionPrincipal(c: Context<AppEnv>): Promise<Principal | null> {
   const row = await session(c);
   if (row?.role !== 'user') return null;
+  if (row.access_email) {
+    if (row.access_config_hash !== await accessConfigHash(c.env)) return null;
+    return c.env.DB.prepare("SELECT k.id, k.user_id, k.project_id, k.permission FROM api_keys k JOIN users u ON u.id = k.user_id WHERE k.id = ? AND k.project_id IS NULL AND k.kind = 'password' AND k.revoked_at IS NULL AND u.disabled_at IS NULL AND u.email = ?")
+      .bind(row.key_id, row.access_email).first<Principal>();
+  }
   return c.env.DB.prepare("SELECT k.id, k.user_id, k.project_id, k.permission FROM api_keys k JOIN users u ON u.id = k.user_id WHERE k.id = ? AND k.project_id IS NULL AND k.revoked_at IS NULL AND u.disabled_at IS NULL AND (k.kind = 'api' OR u.password_hash = ?)")
     .bind(row.key_id, row.password_hash).first<Principal>();
 }
@@ -54,6 +60,23 @@ export async function requireAdmin(c: Context<AppEnv>) {
 }
 
 export const webAuth = new Hono<AppEnv>();
+export async function accessLogin(c: Context<AppEnv>) {
+  const identity = await accessIdentity(c.env, c.req.header('Cf-Access-Jwt-Assertion'));
+  if (!identity) return c.body(null, 204);
+  const user = await c.env.DB.prepare('SELECT id FROM users WHERE email = ? AND disabled_at IS NULL')
+    .bind(identity.email).first<{ id: string }>();
+  if (!user) throw new HTTPException(403, { message: 'Cloudflare Access email has no active account' });
+  await (await passwordActor(c.env, user.id)).run();
+  const key = await c.env.DB.prepare("SELECT id FROM api_keys WHERE user_id = ? AND kind = 'password' AND revoked_at IS NULL")
+    .bind(user.id).first<{ id: string }>();
+  if (!key) throw new HTTPException(403, { message: 'Cloudflare Access email has no active account' });
+  await createSession(c, {
+    role: 'user', key_id: key.id, admin_hash: null, password_hash: null,
+    access_email: identity.email, access_config_hash: identity.configHash,
+  }, Math.min(Date.now() + 24 * 3600 * 1000, identity.expiresAt));
+  return c.json({ data: { role: 'user' } });
+}
+
 webAuth.post('/login', async (c) => {
   const input = await body(c, z.union([
     z.object({ role: z.enum(['admin', 'user']), credential: z.string().min(1).max(256) }).strict(),
@@ -85,17 +108,21 @@ webAuth.post('/login', async (c) => {
     if (!key) throw new HTTPException(401, { message: 'Invalid credentials; use an active user key' });
     keyId = key.id;
   }
+  await createSession(c, { role: input.role, key_id: keyId, admin_hash: adminHash, password_hash: passwordHash, access_email: null, access_config_hash: null }, Date.now() + 24 * 3600 * 1000);
+  return c.json({ data: { role: input.role } });
+});
+
+async function createSession(c: Context<AppEnv>, identity: Session, expiresAt: number) {
   const token = Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) => b.toString(16).padStart(2, '0')).join('');
   const old = getCookie(c, cookieName(c));
   const timestamp = new Date().toISOString();
   const statements = [c.env.DB.prepare('DELETE FROM web_sessions WHERE expires_at <= ?').bind(timestamp)];
   if (old) statements.push(c.env.DB.prepare('DELETE FROM web_sessions WHERE token_hash = ?').bind(await digest(old)));
-  statements.push(c.env.DB.prepare('INSERT INTO web_sessions (token_hash, role, key_id, admin_hash, password_hash, expires_at) VALUES (?, ?, ?, ?, ?, ?)')
-    .bind(await digest(token), input.role, keyId, adminHash, passwordHash, new Date(Date.now() + 24 * 3600 * 1000).toISOString()));
+  statements.push(c.env.DB.prepare('INSERT INTO web_sessions (token_hash, role, key_id, admin_hash, password_hash, access_email, access_config_hash, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    .bind(await digest(token), identity.role, identity.key_id, identity.admin_hash, identity.password_hash, identity.access_email, identity.access_config_hash, new Date(expiresAt).toISOString()));
   await c.env.DB.batch(statements);
-  setCookie(c, cookieName(c), token, { ...cookieOptions(c), maxAge: 24 * 3600 });
-  return c.json({ data: { role: input.role } });
-});
+  setCookie(c, cookieName(c), token, { ...cookieOptions(c), maxAge: Math.max(0, Math.floor((expiresAt - Date.now()) / 1000)) });
+}
 webAuth.get('/session', async (c) => {
   const row = await session(c);
   if (row?.role === 'admin') {
@@ -105,7 +132,7 @@ webAuth.get('/session', async (c) => {
   const principal = await sessionPrincipal(c);
   if (!principal) throw new HTTPException(401, { message: 'Sign in required' });
   const user = await c.env.DB.prepare('SELECT id, name, email, username, password_hash IS NOT NULL AS has_password FROM users WHERE id = ?').bind(principal.user_id).first();
-  return c.json({ data: { role: 'user', user } });
+  return c.json({ data: { role: 'user', user, ...(row?.access_email ? { auth_method: 'cloudflare_access' } : {}) } });
 });
 webAuth.post('/logout', async (c) => {
   const token = getCookie(c, cookieName(c));

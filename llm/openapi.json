@@ -2211,10 +2211,35 @@
         }
       }
     },
+    "/auth/access-login": {
+      "post": {
+        "operationId": "web_access_login",
+        "x-mcp-tool": false,
+        "summary": "Create a browser session from a verified Cloudflare Access user JWT; requires same-origin Origin",
+        "description": "Optional browser login. Validates Cf-Access-Jwt-Assertion signature, issuer, audience and expiry against configured Cloudflare Access. Matches an existing enabled user by email; does not create users or grant admin privileges. The session expires within 24 hours and no later than the assertion. Raw email headers and service identities are not accepted. MCP authentication remains unchanged.",
+        "security": [],
+        "parameters": [
+          {
+            "name": "Cf-Access-Jwt-Assertion",
+            "in": "header",
+            "required": false,
+            "schema": { "type": "string" },
+            "description": "Cloudflare Access user application JWT inserted by Access"
+          }
+        ],
+        "responses": {
+          "200": { "description": "User session created; sets a secure HttpOnly session Cookie" },
+          "204": { "description": "Access login is disabled or no assertion was supplied; use existing login" },
+          "401": { "description": "Invalid or expired Access assertion" },
+          "403": { "description": "No enabled account matches the email, or Origin is not same-origin" },
+          "503": { "description": "Incomplete or invalid Cloudflare Access configuration" }
+        }
+      }
+    },
     "/api/web/session": {
       "get": {
         "operationId": "web_session",
-        "summary": "Read the current Web session (Cookie authentication)",
+        "summary": "Read the current Web session (Cookie authentication); Access user sessions include auth_method: cloudflare_access",
         "responses": {
           "200": {
             "description": "Success"

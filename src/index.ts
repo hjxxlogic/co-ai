@@ -7,7 +7,7 @@ import type { AppEnv, Env, Principal } from './types';
 import { deliverMessageEvents } from './mcp-events';
 import { bearer, digest, newKey, ownerOnly, writable } from './security';
 import { body, boundedBody, pagination } from './http';
-import { csrfGuard, sessionPrincipal, webAuth } from './web-auth';
+import { accessLogin, csrfGuard, sessionPrincipal, webAuth } from './web-auth';
 import { adminApi } from './admin';
 import { rolesApi } from './roles';
 import { itemsApi } from './items';
@@ -30,7 +30,7 @@ app.use('*', async (c, next) => {
   if (new URL(c.req.url).protocol !== 'https:') {
     const url = new URL(c.req.url);
     url.protocol = 'https:';
-    if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/oauth/') || url.pathname.startsWith('/.well-known/') || url.pathname === '/mcp' || url.pathname === '/mcp/') {
+    if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/auth/') || url.pathname.startsWith('/oauth/') || url.pathname.startsWith('/.well-known/') || url.pathname === '/mcp' || url.pathname === '/mcp/') {
       c.header('Upgrade', 'TLS/1.3');
       return c.json({ error: { code: 426, message: 'HTTPS required' } }, 426);
     }
@@ -90,6 +90,9 @@ app.get('/app.js', (c) => c.env.DOCS.fetch(c.req.raw));
 app.get('/styles.css', (c) => c.env.DOCS.fetch(c.req.raw));
 app.get('/oauth.js', (c) => c.env.DOCS.fetch(c.req.raw));
 app.get('/oauth.css', (c) => c.env.DOCS.fetch(c.req.raw));
+for (const asset of ['styles.css', 'oauth.css', 'oauth.js']) {
+  app.get('/oauth/assets/' + asset, (c) => c.env.DOCS.fetch(new Request(new URL('/' + asset, c.req.url), c.req.raw)));
+}
 app.get('/.well-known/oauth-authorization-server', oauthMetadata);
 app.get('/.well-known/oauth-protected-resource', protectedMetadata('mcp'));
 app.get('/.well-known/oauth-protected-resource/mcp', protectedMetadata('mcp'));
@@ -111,6 +114,7 @@ app.get('/llm/*', async (c) => {
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 });
 
+app.post('/auth/access-login', csrfGuard, accessLogin);
 app.route('/api/web', webAuth);
 app.route('/api/admin', adminApi);
 app.route('/api/uploads/attachments', uploadTransfer);

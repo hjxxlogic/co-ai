@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import app from '../src/index';
 import type { Env } from '../src/types';
 import { digest } from '../src/security';
+import { exportJWK, generateKeyPair, SignJWT, type JWTPayload } from 'jose';
 import { deliverMessageEvents, signedHeaders } from '../src/mcp-events';
 import { webhookPost, WebhookRequestError } from '../src/event-webhook';
 vi.mock('../src/event-webhook', async (original) => ({
@@ -80,7 +81,7 @@ beforeAll(async () => {
   const bindings = await mf.getBindings();
   env = { ...bindings, EVENTS_LIVE: { idFromName: (name: string) => name, get: () => ({ fetch: async () => new Response(null, { status: 204 }) }) }, ADMIN_TOKEN: admin, DOCS: { fetch: async (req: Request) => new Response(new URL(req.url).pathname.endsWith('.html') ? '<!doctype html><h1>AI docs</h1><a href="/llm/API.html">API</a>' : 'API docs', { headers: { 'Content-Type': new URL(req.url).pathname.endsWith('.html') ? 'text/html; charset=utf-8' : 'text/plain; charset=utf-8' } }) } } as unknown as Env;
   // D1 exec expects each statement on one line.
-  for (const file of ['0001_initial.sql', '0002_web_management.sql', '0003_roles_and_tags.sql', '0004_password_login.sql', '0005_recipient_roles.sql', '0006_oauth.sql', '0007_project_tables.sql', '0008_attachment_uploads.sql', '0009_mcp_events.sql', '0010_mcp_debug_logs.sql', '0011_items_search.sql', '0012_workflows.sql', '0013_work_state_updated.sql', '0014_work_desc.sql', '0015_items_query_performance.sql', '0016_works_project_id.sql']) {
+  for (const file of ['0001_initial.sql', '0002_web_management.sql', '0003_roles_and_tags.sql', '0004_password_login.sql', '0005_recipient_roles.sql', '0006_oauth.sql', '0007_project_tables.sql', '0008_attachment_uploads.sql', '0009_mcp_events.sql', '0010_mcp_debug_logs.sql', '0011_items_search.sql', '0012_workflows.sql', '0013_work_state_updated.sql', '0014_work_desc.sql', '0015_items_query_performance.sql', '0016_works_project_id.sql', '0017_cloudflare_access.sql']) {
     if (file === '0004_password_login.sql') {
       const time = '2025-01-01T00:00:00.000Z';
       await env.DB.batch([
@@ -293,13 +294,149 @@ async function login(role: string, credential: string) {
   return cookie.split(';')[0];
 }
 
+describe('Cloudflare Access browser login', () => {
+  const issuer = 'https://coai-login-test.cloudflareaccess.com';
+  const audience = 'coai-browser-audience';
+  let privateKey: CryptoKey;
+  let publicJwk: Awaited<ReturnType<typeof exportJWK>>;
+
+  beforeAll(async () => {
+    const keys = await generateKeyPair('RS256');
+    privateKey = keys.privateKey;
+    publicJwk = { ...await exportJWK(keys.publicKey), kid: 'access-test-key', alg: 'RS256', use: 'sig' };
+  });
+
+  const bindings = () => ({ ...env, CF_ACCESS_TEAM_DOMAIN: issuer, CF_ACCESS_AUD: audience });
+  async function token(email: string, claims: JWTPayload = {}, key: CryptoKey = privateKey) {
+    const now = Math.floor(Date.now() / 1000);
+    return new SignJWT({ iss: issuer, aud: [audience], sub: 'cloudflare-user', iat: now, exp: now + 600, type: 'app', email, ...claims })
+      .setProtectedHeader({ alg: 'RS256', kid: 'access-test-key' }).sign(key);
+  }
+  async function accessLogin(assertion?: string, headers: Record<string, string> = {}, configuredEnv: Env = bindings()) {
+    const mock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      expect(String(url)).toBe(issuer + '/cdn-cgi/access/certs');
+      return new Response(JSON.stringify({ keys: [publicJwk] }), { headers: { 'Content-Type': 'application/json' } });
+    });
+    try {
+      return await app.request('https://co-ai.test/auth/access-login', {
+        method: 'POST', headers: { Origin: 'https://co-ai.test', ...(assertion ? { 'Cf-Access-Jwt-Assertion': assertion } : {}), ...headers },
+      }, configuredEnv);
+    } finally { mock.mockRestore(); }
+  }
+  async function browser(path: string, cookie: string, configuredEnv: Env = bindings()) {
+    return app.request('https://co-ai.test' + path, { headers: { Cookie: cookie } }, configuredEnv);
+  }
+
+  it('logs into an existing email without a password and preserves project isolation', async () => {
+    const owner = await provision('access-owner@test.com'), other = await provision('access-other@test.com');
+    const project = await createProject(owner), otherProject = await createProject(other);
+    const oldCookie = await login('user', owner);
+    const expires = Math.floor(Date.now() / 1000) + 600;
+    const res = await accessLogin(await token('ACCESS-OWNER@test.com', { exp: expires }), { Cookie: oldCookie });
+    expect(res.status).toBe(200);
+    const setCookie = res.headers.get('Set-Cookie')!;
+    expect(setCookie).toContain('HttpOnly'); expect(setCookie).toContain('Secure'); expect(setCookie).toContain('SameSite=Strict');
+    const cookie = setCookie.split(';')[0];
+    const current = await (await browser('/api/web/session', cookie)).json() as any;
+    expect(current.data).toMatchObject({ role: 'user', auth_method: 'cloudflare_access', user: { email: 'access-owner@test.com', has_password: 0 } });
+    expect((await browser('/api/web/session', oldCookie)).status).toBe(401);
+    expect((await browser('/api/v1/projects/' + project, cookie)).status).toBe(200);
+    expect((await browser('/api/v1/projects/' + otherProject, cookie)).status).toBe(404);
+    expect((await browser('/api/admin/users', cookie)).status).toBe(401);
+    const stored = await env.DB.prepare('SELECT expires_at FROM web_sessions WHERE token_hash = ?').bind(await digest(cookie.split('=')[1])).first<{ expires_at: string }>();
+    expect(Date.parse(stored!.expires_at)).toBe(expires * 1000);
+    expect((await web('/api/v1/projects', cookie, 'POST', { name: 'CSRF' }, 'https://evil.test')).status).toBe(403);
+    expect((await web('/api/web/logout', cookie, 'POST')).status).toBe(204);
+    expect((await browser('/api/web/session', cookie)).status).toBe(401);
+  });
+
+  it('rejects unknown and disabled emails without provisioning accounts', async () => {
+    const owner = await provision('access-disabled@test.com');
+    const user = (await (await request('/api/v1/me', owner)).json() as any).data;
+    await request('/api/admin/users/' + user.id, admin, 'PATCH', { disabled: true });
+    for (const email of ['access-unregistered@test.com', user.email]) {
+      const res = await accessLogin(await token(email));
+      expect(res.status).toBe(403); expect(res.headers.has('Set-Cookie')).toBe(false);
+    }
+    expect(await env.DB.prepare('SELECT id FROM users WHERE email = ?').bind('access-unregistered@test.com').first()).toBeNull();
+  });
+
+  it.each([
+    ['wrong issuer', { iss: 'https://attacker.cloudflareaccess.com' }],
+    ['wrong audience', { aud: 'another-application' }],
+    ['expired', { exp: 1 }],
+    ['not yet valid', { nbf: 9999999999 }],
+    ['missing expiry', { exp: undefined }],
+    ['missing subject', { sub: undefined }],
+    ['missing email', { email: undefined }],
+    ['invalid email', { email: 'not-an-email' }],
+    ['service identity', { type: 'service' }],
+  ])('rejects %s assertions', async (_name, claims) => {
+    const res = await accessLogin(await token('access-owner@test.com', claims));
+    expect(res.status).toBe(401); expect(res.headers.has('Set-Cookie')).toBe(false);
+  });
+
+  it('rejects forged signatures, malformed tokens and unsigned email headers', async () => {
+    const other = await generateKeyPair('RS256');
+    expect((await accessLogin(await token('access-owner@test.com', {}, other.privateKey))).status).toBe(401);
+    expect((await accessLogin('not-a-jwt')).status).toBe(401);
+    const rawEmail = await accessLogin(undefined, { 'Cf-Access-Authenticated-User-Email': 'access-owner@test.com' });
+    expect(rawEmail.status).toBe(204); expect(rawEmail.headers.has('Set-Cookie')).toBe(false);
+    expect((await accessLogin(await token('access-owner@test.com'), { Origin: 'https://evil.test' })).status).toBe(403);
+    expect((await accessLogin(await token('access-owner@test.com'), { Origin: '' })).status).toBe(403);
+  });
+
+  it('leaves login optional and rejects incomplete or untrusted configuration', async () => {
+    const assertion = await token('access-owner@test.com');
+    expect((await accessLogin(assertion, {}, env)).status).toBe(204);
+    expect((await accessLogin(assertion, {}, { ...env, CF_ACCESS_AUD: audience })).status).toBe(503);
+    expect((await accessLogin(assertion, {}, { ...bindings(), CF_ACCESS_TEAM_DOMAIN: 'https://attacker.test' })).status).toBe(503);
+  });
+
+  it('invalidates Access sessions on email changes, configuration changes, expiry and disable', async () => {
+    const owner = await provision('access-invalidation@test.com');
+    const user = (await (await request('/api/v1/me', owner)).json() as any).data;
+    const response = await accessLogin(await token(user.email));
+    const cookie = response.headers.get('Set-Cookie')!.split(';')[0];
+    expect((await browser('/api/web/session', cookie, env)).status).toBe(401);
+    expect((await browser('/api/web/session', cookie, { ...bindings(), CF_ACCESS_AUD: 'changed-audience' })).status).toBe(401);
+    await request('/api/admin/users/' + user.id, admin, 'PATCH', { email: 'access-renamed@test.com' });
+    expect((await browser('/api/v1/projects', cookie)).status).toBe(401);
+    await request('/api/admin/users/' + user.id, admin, 'PATCH', { email: user.email });
+    expect((await browser('/api/web/session', cookie)).status).toBe(200);
+    await env.DB.prepare('UPDATE web_sessions SET expires_at = ? WHERE token_hash = ?').bind('2000-01-01T00:00:00.000Z', await digest(cookie.split('=')[1])).run();
+    expect((await browser('/api/web/session', cookie)).status).toBe(401);
+    const fresh = (await accessLogin(await token(user.email))).headers.get('Set-Cookie')!.split(';')[0];
+    await request('/api/admin/users/' + user.id, admin, 'PATCH', { disabled: true });
+    expect((await browser('/api/web/session', fresh)).status).toBe(401);
+  });
+
+  it('keeps MCP and REST Bearer authentication independent of Access assertions', async () => {
+    const owner = await provision('access-mcp@test.com');
+    const assertion = await token('access-mcp@test.com');
+    for (const path of ['/mcp', '/api/v1/me']) {
+      const headers = { 'Cf-Access-Jwt-Assertion': assertion };
+      expect((await app.request('https://co-ai.test' + path, { headers }, bindings())).status).toBe(401);
+      expect((await app.request('https://co-ai.test' + path, { headers: { ...headers, Authorization: 'Bearer invalid' } }, bindings())).status).toBe(401);
+    }
+    expect((await app.request('https://co-ai.test/api/v1/me', { headers: { Authorization: `Bearer ${owner}` } }, bindings())).status).toBe(200);
+    const response = await app.request('https://co-ai.test/mcp', {
+      method: 'POST', headers: { Authorization: `Bearer ${owner}`, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+    }, bindings());
+    expect(response.status).toBe(200);
+    const catalog = await response.json() as any;
+    expect(catalog.result.tools.some((tool: any) => tool.name === 'web_access_login')).toBe(false);
+  });
+});
+
 describe('HTTPS Web sessions and management', () => {
   it('forces HTTPS for Web, documents and ALL REST endpoints before any handler runs', async () => {
     for (const path of ['/', '/llm', '/llm/API.md']) {
       const res = await app.request('http://co-ai.test' + path, {}, env);
       expect(res.status).toBe(308); expect(res.headers.get('Location')).toBe('https://co-ai.test' + path);
     }
-    for (const path of ['/api/web/login', '/api/admin/users', '/api/v1/projects/p/items', '/api/v1/projects/p/attachments', '/api/v1/projects/p/llm']) {
+    for (const path of ['/auth/access-login', '/api/web/login', '/api/admin/users', '/api/v1/projects/p/items', '/api/v1/projects/p/attachments', '/api/v1/projects/p/llm']) {
       const res = await app.request('http://co-ai.test' + path, { method: 'POST', body: 'not-json' }, env);
       expect(res.status).toBe(426); expect((await res.json() as any).error.message).toBe('HTTPS required');
     }
@@ -1345,6 +1482,56 @@ describe('OAuth authorization server and protected resources', () => {
     for (const path of ['/oauth/register', '/oauth/token', '/oauth/revoke', '/.well-known/oauth-authorization-server']) {
       expect((await app.request('http://co-ai.test' + path, { method: 'POST' }, env)).status).toBe(426);
     }
+  });
+
+  it('completes MCP OAuth with only the five Access bypass path groups', async () => {
+    const owner = await provision('oauth-access-paths@test.com'), projectId = await createProject(owner);
+    const resource = 'https://co-ai.test/mcp';
+    const staticFiles = ['styles.css', 'oauth.css', 'oauth.js'];
+    const configuredEnv = { ...env, DOCS: { fetch: async (req: Request) => {
+      const filename = new URL(req.url).pathname.slice(1);
+      expect(staticFiles).toContain(filename);
+      return new Response(await readFile(new URL('../public/' + filename, import.meta.url), 'utf8'));
+    } } } as Env;
+    const gateway = (path: string, method = 'GET', cookie?: string, input?: string, contentType = 'application/json', authorization?: string) => {
+      expect(path).toMatch(/^\/(?:mcp|llm|oauth|api|\.well-known)(?:\/|$)/);
+      return app.request('https://co-ai.test' + path, {
+        method, body: input, headers: {
+          Origin: 'https://co-ai.test', Accept: 'application/json, text/event-stream', 'Content-Type': contentType,
+          ...(cookie ? { Cookie: cookie } : {}), ...(authorization ? { Authorization: authorization } : {}),
+        },
+      }, configuredEnv);
+    };
+    const discovery = await (await gateway('/.well-known/oauth-authorization-server')).json() as any;
+    expect(discovery.issuer).toBe('https://co-ai.test');
+    const registered = await gateway(new URL(discovery.registration_endpoint).pathname, 'POST', undefined, JSON.stringify({ client_name: 'Access paths', redirect_uris: [oauthRedirect] }));
+    const clientId = (await registered.json() as any).client_id;
+    const query = new URLSearchParams({ client_id: clientId, redirect_uri: oauthRedirect, response_type: 'code', code_challenge: await pkceChallenge(oauthVerifier), code_challenge_method: 'S256', resource, scope: 'read' });
+    const page = await gateway('/oauth/authorize?' + query);
+    expect(page.status).toBe(200);
+    const html = await page.text();
+    const assets = [...html.matchAll(/(?:href|src)="([^"]+)"/g)].map((match) => match[1]);
+    expect(assets).toHaveLength(3);
+    for (const asset of assets) {
+      expect(asset).toMatch(/^\/oauth\/assets\//);
+      const response = await gateway(asset);
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe(await readFile(new URL('../public/' + asset.split('/').at(-1), import.meta.url), 'utf8'));
+    }
+    expect((await gateway('/oauth/assets/app.js')).status).toBe(404);
+    const loggedIn = await gateway('/api/web/login', 'POST', undefined, JSON.stringify({ role: 'user', credential: owner }));
+    expect(loggedIn.status).toBe(200);
+    const cookie = loggedIn.headers.get('Set-Cookie')!.split(';')[0];
+    const requestId = /data-request="([a-f0-9]{64})"/.exec(html)![1];
+    expect((await gateway('/oauth/requests/' + requestId, 'GET', cookie)).status).toBe(200);
+    const consent = await gateway('/oauth/consent', 'POST', cookie, JSON.stringify({ request_id: requestId, decision: 'approve', project_id: projectId }));
+    const redirect = new URL((await consent.json() as any).data.redirect);
+    const exchange = await gateway('/oauth/token', 'POST', undefined, new URLSearchParams({ grant_type: 'authorization_code', client_id: clientId, code: redirect.searchParams.get('code')!, redirect_uri: oauthRedirect, code_verifier: oauthVerifier, resource }).toString(), 'application/x-www-form-urlencoded');
+    expect(exchange.status).toBe(200);
+    const accessToken = (await exchange.json() as any).access_token;
+    const result = await gateway('/mcp', 'POST', undefined, JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }), 'application/json', 'Bearer ' + accessToken);
+    expect(result.status).toBe(200);
+    expect((await result.json() as any).result.tools.length).toBeGreaterThan(0);
   });
 
   it('grants project REST reads with PKCE, audience binding, explicit consent and one-time codes', async () => {

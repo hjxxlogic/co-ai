@@ -5,6 +5,8 @@ export interface Env {
   DOCS: Fetcher;
   ADMIN_TOKEN: string;
   MCP_DEBUG_LOGS?: string;
+  CF_ACCESS_TEAM_DOMAIN?: string;
+  CF_ACCESS_AUD?: string;
 }
 
 export interface Principal {

@@ -18,6 +18,33 @@
 
 所有接口强制 HTTPS：HTTP 网页和文档请求跳转到 HTTPS；HTTP `/api/*` 请求直接返回 `426 HTTPS required`，不执行读写或鉴权。HTTPS 响应包含 HSTS。AI 必须从一开始就使用 HTTPS 地址，不应通过 HTTP 发送 Key 后再等待跳转。
 
+## Cloudflare Access 邮箱登录
+
+可在网站前启用 Cloudflare Zero Trust Access。浏览器完成 Access 登录后，工作台会验证 Access 用户应用 JWT，并按邮箱忽略大小写匹配已有且启用的用户，直接进入该用户的项目。不会自动创建用户或授予管理员权限。用户邮箱应与 Access 登录邮箱一致；可以在用户管理中修改。未配置 Access 或请求没有 Access 凭证时，继续提供原用户名密码、用户 Key 和管理员登录。
+
+配置步骤：
+
+1. 在 Cloudflare Zero Trust → Access → Applications 创建 Self-hosted 应用，保护 `co-ai.xlogic.cc`。添加 Allow 策略，只允许所需邮箱或身份提供方；可使用邮箱一次性验证码登录。
+2. 记下 Team domain（如 `your-team.cloudflareaccess.com`）和应用的 Application Audience（AUD）。在 `wrangler.jsonc` 的 `vars` 中添加 `CF_ACCESS_TEAM_DOMAIN` 和 `CF_ACCESS_AUD`；本地测试可写入 `.dev.vars`。两者必须同时配置，Team domain 只接受 Cloudflare Access 域名，可带 `https://`。
+3. 配置下表五组路径绕过 Access，让现有 API/MCP/OAuth 自行认证。每组包含该路径及子路径。可创建更具体路径的 Self-hosted 应用，使用 Bypass / Everyone 策略；也可以使用应用的 public path overrides。使用 overrides 时，精确路径和子路径通配需要分别填写，例如 `/mcp` 和 `/mcp/*`。
+4. 先执行 `npm run db:migrate:remote` 应用 `0017_cloudflare_access.sql`，再运行 `npm run deploy`。部署后用与站内账号相同的邮箱完成 Access 登录，首页应直接进入工作台。
+
+| 绕过 Access 的路径（含子路径） | 用途 |
+| --- | --- |
+| `/mcp` | MCP Key / OAuth 连接及 Events |
+| `/llm` | 公开文档及文档资源 |
+| `/oauth` | 原有 OAuth 流程及授权页的全部静态资源 |
+| `/api` | REST API、原有网页登录和已签名附件上传 |
+| `/.well-known` | 标准 OAuth 授权服务及受保护资源发现 |
+
+`/`、`/app.js`、`/styles.css` 和 `/auth/access-login` 保留 Access 保护。新增加的 Access 自动登录入口位于 `/auth`，可以整组放行 `/api`。授权页静态资源通过 `/oauth/assets/` 提供，原静态资源地址继续保留。现有 OAuth issuer、发现地址、API 地址和登录方式不变；`/.well-known` 是标准 OAuth 发现所需，不能省略。`/health` 默认也受 Access 保护，如有外部健康监控需求可单独放行。
+
+路径例外仅放行 Cloudflare 这一层，应用内的 API Key、OAuth、Cookie 和同源校验继续生效。创建应用时保留本站原有 OAuth 服务，不启用 Access 代管 MCP OAuth。
+
+工作台启动时先读取现有会话；没有会话时尝试 `POST /auth/access-login`。现有 Access 会话会重新校验当前 Access 身份，普通密码、Key 和管理员会话保留原流程。用户会话只保存随机会话标识的哈希，不保存 Access JWT；会话有效期最多 24 小时且不超过 Access JWT 过期时间。原始 `Cf-Access-Authenticated-User-Email` 请求头不能用于登录。Access 登录的用户点击退出时，会同时退出本站会话并前往 `/cdn-cgi/access/logout`。
+
+参考：[Cloudflare JWT 验证](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/) 和 [Workers 的 Access 保护](https://developers.cloudflare.com/workers/configuration/cloudflare-access/)。
+
 ## 架构
 
 - **Cloudflare Workers / TypeScript / Hono**：HTTP 路由、鉴权、输入校验与项目隔离。

@@ -8,7 +8,11 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-10-11",
   "compatibility_flags": ["nodejs_compat"],
-  "vars": { "MCP_DEBUG_LOGS": "false" },
+  "vars": {
+    "MCP_DEBUG_LOGS": "false",
+    "CF_ACCESS_TEAM_DOMAIN": "x1x3.cloudflareaccess.com",
+    "CF_ACCESS_AUD": "11906f98a3bfe8404d4a3e26e17659dd00b3bdabf8a2a39a51d4e709d880b03a"
+  },
   "durable_objects": { "bindings": [{ "name": "EVENTS_LIVE", "class_name": "EventsLive" }] },
   "migrations": [{ "tag": "v1-events-live", "new_sqlite_classes": ["EventsLive"] }],
   "triggers": { "crons": ["* * * * *"] },

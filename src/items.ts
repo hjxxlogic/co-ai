@@ -111,6 +111,7 @@ itemsApi.get('/', async (c) => {
   const itemSource = indexedSearch ? 'items_search CROSS JOIN items i ON i.rowid = items_search.rowid' : 'items i';
   if (q) {
     // Trigram search cannot index terms shorter than three characters.
+    // Keep the literal check: FTS Unicode case folding differs from SQLite lower().
     if (indexedSearch) {
       where.push('items_search MATCH ?');
       bindings.push(`"${q.replace(/"/g, '""')}"`);
@@ -127,9 +128,10 @@ itemsApi.get('/', async (c) => {
       bindings.push(projectId!, value);
     }
   }
-  const count = includeTotal === 'true'
-    ? await c.env.DB.prepare(`SELECT COUNT(*) AS total FROM ${itemSource} WHERE ${where.join(' AND ')}`).bind(...bindings).first<{ total: number }>()
-    : null;
+  // Preserve the full filter before adding page bounds. Only count separately
+  // when the first page cannot establish the complete matching total.
+  const countSql = `SELECT COUNT(*) AS total FROM ${itemSource} WHERE ${where.join(' AND ')}`;
+  const countBindings = [...bindings];
   // Seek from the cursor instead of rescanning newer rows under the snapshot bound.
   // Keep the original snapshot for counts and subsequent cursors.
   if (cursor && order === 'newest' && cursor.time < snapshot) bindings[1] = cursor.time;
@@ -144,6 +146,11 @@ itemsApi.get('/', async (c) => {
   const direction = descending ? 'DESC' : 'ASC';
   const sort = order === 'id' ? 'i.id ASC' : `${timeColumn} ${direction}, i.id ${direction}`;
   const { results } = await c.env.DB.prepare(`${selectItem.replace('FROM items i', `FROM ${itemSource}`)} WHERE ${where.join(' AND ')} ORDER BY ${sort} LIMIT ?`).bind(...bindings, pageSize + 1).all<Row>();
+  const count = includeTotal === 'true'
+    ? !after && results.length <= pageSize
+      ? { total: results.length }
+      : await c.env.DB.prepare(countSql).bind(...countBindings).first<{ total: number }>()
+    : null;
   const data = results.slice(0, pageSize).map(serialize), last = data.at(-1);
   const next = results.length > pageSize && (!maxItems || seen + data.length < maxItems) && last
     ? legacyCursor ? last.id : encodeCursor({ v: 1, fingerprint, snapshot, id: last.id, time: updatedOrder ? last.updated_at : last.created_at, seen: seen + data.length })

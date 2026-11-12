@@ -724,6 +724,33 @@ describe('project roles, message TAGs and search windows', () => {
     expect((await request(base + '?include_total=invalid', writer)).status).toBe(400);
   });
 
+  it('reuses complete first pages for exact totals without counting capped or later pages as totals', async () => {
+    const { writer, base } = await searchFixture('page-count@test.com');
+    const queries: string[] = [];
+    const measuredEnv = { ...env, DB: new Proxy(env.DB, { get(target, key) {
+      if (key === 'prepare') return (sql: string) => { queries.push(sql); return target.prepare(sql); };
+      const value = Reflect.get(target, key); return typeof value === 'function' ? value.bind(target) : value;
+    } }) };
+    const read = async (query: string) => {
+      queries.length = 0;
+      const response = await app.request('https://co-ai.test' + base + query, { headers: { Authorization: `Bearer ${writer}` } }, measuredEnv);
+      expect(response.status).toBe(200);
+      return await response.json() as any;
+    };
+    for (const query of ['?limit=4', '?q=Middle', '?q=zzzznonexistent', '?q=Mi']) {
+      const page = await read(query);
+      expect(page.total_count).toBe(page.data.length);
+      expect(queries.some((sql) => sql.startsWith('SELECT COUNT(*)'))).toBe(false);
+    }
+    const capped = await read('?order=newest&max_items=1');
+    expect(capped.total_count).toBe(4); expect(capped.data).toHaveLength(1);
+    expect(queries.some((sql) => sql.startsWith('SELECT COUNT(*)'))).toBe(true);
+    const first = await read('?order=newest&limit=3');
+    const last = await read('?order=newest&limit=3&after=' + first.next_cursor);
+    expect(last.data).toHaveLength(1); expect(last.total_count).toBe(4);
+    expect(queries.some((sql) => sql.startsWith('SELECT COUNT(*)'))).toBe(true);
+  });
+
   it('backfills and maintains indexed tags across edits, deletion and project boundaries', async () => {
     expect(await env.DB.prepare('SELECT tag FROM item_tags WHERE item_id = ?').bind(migrationIds.items).first('tag')).toBe('stable');
     const { writer, base, records } = await searchFixture('indexed-tags@test.com');
@@ -763,10 +790,10 @@ describe('project roles, message TAGs and search windows', () => {
       if (key === 'prepare') return (query: string) => { sql.push(query); return target.prepare(query); };
       const value = Reflect.get(target, key); return typeof value === 'function' ? value.bind(target) : value;
     } }) };
-    const response = await app.request(`https://co-ai.test${base}?q=Middle&tag=api&kind=message`, { headers: { Authorization: `Bearer ${writer}` } }, localEnv);
+    const response = await app.request(`https://co-ai.test${base}?q=Middle&tag=api&kind=message&limit=1`, { headers: { Authorization: `Bearer ${writer}` } }, localEnv);
     expect(response.status).toBe(200);
     expect((await response.json() as any).data.map((i: any) => i.id)).toEqual([records[1].id]);
-    const search = sql.find((query) => query.startsWith('SELECT COUNT(*)'))!;
+    const search = 'SELECT COUNT(*) FROM ' + sql.find((query) => query.startsWith('SELECT i.*'))!.split('\n  FROM ')[1].replace(/ ORDER BY .*$/, '');
     const params = [project, new Date().toISOString(), 'message', '"Middle"', 'Middle', 'Middle', project, 'api'];
     const plan = await env.DB.prepare('EXPLAIN QUERY PLAN ' + search).bind(...params).all<{ detail: string }>();
     const details = plan.results.map((row) => row.detail);
@@ -815,6 +842,18 @@ describe('project roles, message TAGs and search windows', () => {
     expect((await request(`${base}/${created.id}`, owner, 'DELETE', { version: 2 })).status).toBe(204);
     expect((await query('dated')).total_count).toBe(0);
     expect((await query('dated', '&include_deleted=true')).data.map((item: any) => item.id)).toContain(created.id);
+  });
+
+  it('preserves literal substring semantics despite Unicode FTS case folding', async () => {
+    const owner = await provision('fts-case@test.com'), project = await createProject(owner);
+    const base = `/api/v1/projects/${project}/items`;
+    const item = (await (await request(base, owner, 'POST', { title: 'ÄBC example', content: '' })).json() as any).data;
+    const candidates = await env.DB.prepare('SELECT rowid FROM items_search WHERE items_search MATCH ?').bind('"äbc"').all();
+    expect(candidates.results.length).toBeGreaterThan(0);
+    const lower = await (await request(base + '?q=' + encodeURIComponent('äbc'), owner)).json() as any;
+    expect(lower.total_count).toBe(0); expect(lower.data).toEqual([]);
+    const exact = await (await request(base + '?q=' + encodeURIComponent('ÄBC'), owner)).json() as any;
+    expect(exact.total_count).toBe(1); expect(exact.data[0].id).toBe(item.id);
   });
 
   it('caps total results across chronological pages and safely breaks timestamp ties', async () => {

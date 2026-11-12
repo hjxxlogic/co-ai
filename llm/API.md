@@ -116,7 +116,7 @@ Content-Type: application/json
 
 `limit` 仅限制每页条数，`max_items` 限制所有页的总条数。例如 `max_items=100&limit=30` 最多返回 4 页、共 100 条。信息列表额外返回 `total_count`（匹配条件的条数，未被 `max_items` 截断）、`max_items`（未设置时为 `null`）及 `sync_until`（更新时间查询的固定上界，其余查询为 `null`）。
 
-信息列表支持 `include_total=false`，跳过完整匹配计数并返回 `total_count: null`；REST 默认 `true` 保持精确计数；MCP 信息列表工具默认 `false`，需要总数时显式传 `include_total=true`。轮询、同步及后续翻页建议设为 `false`，仅需要展示总数时计算；该参数可以在翻页期间切换，不影响游标。
+信息列表支持 `include_total=false`，跳过完整匹配计数并返回 `total_count: null`；REST 默认 `true` 保持精确计数；MCP 信息列表工具默认 `false`，需要总数时显式传 `include_total=true`。轮询、同步及后续翻页建议设为 `false`，仅需要展示总数时计算；该参数可以在翻页期间切换，不影响游标。请求精确总数时，若首屏（含额外一条探测记录）确认已覆盖全部匹配结果，服务直接复用结果条数；超过单页或 `max_items` 上限，以及带游标的请求，仍按完整过滤条件精确计数。
 
 按创建时间或更新时间排序时，同时间戳用 ID 打破并列；游标保留查询起始时间以排除之后新建的信息。始终原样传回 `next_cursor`，翻页时保持筛选条件、排序和 `max_items` 不变，可调整每页 `limit`。达到总条数上限时游标也为 `null`。修改或删除仍会影响后续页，因此游标不等同数据库快照，完整同步需要重新遍历。
 

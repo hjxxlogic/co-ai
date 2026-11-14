@@ -226,3 +226,5 @@ curl "$BASE_URL/api/v1/projects/$PROJECT_ID/items" \
 每个项目可配置多张独立 D1 表。在工作台“数据表”页定义字段，或通过 `createProjectTable` 工具创建（需要所有者 Key / OAuth manage）。AI 先用 `listProjectTables`、`getProjectTable` 发现表和字段，再用 `listTableRows`、`getTableRow`、`createTableRow`、`updateTableRow`、`deleteTableRow` 读写。项目读写 Key 可管理记录，只读 Key 只能查询；所有者可管理表。记录修改/删除必须带当前 version，冲突后重新读取并合并。详情及过滤规则见 [项目 D1 数据表](./API.md#项目-d1-数据表)。
 
 REST 客户端可使用独立的 [REST SSE 事件](./API.md#rest-sse-事件)：先连接 `/api/v1/events/stream` 并等待 ready，再并行消费通知与 REST 全分页补读。即时提示与 MCP webhook 分别订阅，重连必须补读，不支持事件重放。
+
+授权页允许用户显式勾选额外权限，即使客户端只请求 read，也可选择 write 或 manage；默认仅勾选客户端请求且当前身份可用的权限。write 授权所选项目的读写，manage 授权全部项目及角色、Key 管理。管理员只可授予 admin，普通用户不可授予 admin，资源边界保持有效。`GET /oauth/requests/:requestId` 返回 `available_scopes`；同源 `POST /oauth/consent` 可提交可选的空格分隔 `scope`，必须非空且属于当前身份和资源允许的范围，省略时保留原请求范围。令牌响应返回实际授予的 scope；刷新不能扩大权限。

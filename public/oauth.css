@@ -1,1 +1,3 @@
 .oauth-page{max-width:620px;margin:48px auto;padding:16px}.oauth-page h1{font-size:26px;margin:24px 0}.oauth-page .brand{font-size:28px}.oauth-page form{margin-top:24px}.oauth-page input,.oauth-page select{width:100%;margin-bottom:16px}.oauth-uri{overflow-wrap:anywhere}.oauth-actions{display:flex;gap:12px;margin:20px 0}.oauth-error{color:#a13737}.oauth-page li{margin:8px 0}@media(max-width:640px){.oauth-page{margin:16px auto}}
+
+.oauth-page .oauth-scope{display:flex;align-items:flex-start;gap:10px;margin:12px 0}.oauth-page .oauth-scope input{width:auto;flex-shrink:0;margin:3px 0 0}.oauth-page fieldset{border:1px solid #8886;border-radius:8px;padding:12px}

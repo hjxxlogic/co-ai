@@ -69,6 +69,10 @@ function scopes(value: string | undefined) {
 function consentScope(requested: string, role: 'user' | 'admin') {
   return requested.split(' ').filter((scope) => role === 'admin' ? scope === 'admin' : scope !== 'admin').join(' ');
 }
+function selectableScopes(c: Context<AppEnv>, resource: string, role: 'user' | 'admin') {
+  if (role === 'admin') return resource === resourceUri(c, 'api') ? [] : ['admin'];
+  return resource === resourceUri(c, 'admin') ? [] : ['read', 'write', 'manage'];
+}
 async function client(c: Context<AppEnv>, id: string | undefined) {
   const row = id ? await c.env.DB.prepare('SELECT id, name, redirect_uris, grant_types FROM oauth_clients WHERE id = ?').bind(id).first<Client>() : null;
   if (!row) throw new OAuthError('invalid_client', 'Unknown client');
@@ -186,12 +190,12 @@ oauthApi.get('/requests/:requestId', async (c) => {
     if (binding?.session_hash !== hash) throw new OAuthError('invalid_request', 'Authorization request belongs to another browser session', 403);
   }
   const projects = actor?.principal ? (await c.env.DB.prepare('SELECT id, name FROM projects WHERE owner_id = ? AND archived_at IS NULL ORDER BY name, id').bind(actor.principal.user_id).all()).results : [];
-  return c.json({ data: { client_name: registered.name, redirect_uri: request.redirect_uri, resource: request.resource, scope: actor ? consentScope(request.scope, actor.role) : request.scope, actor: actor ? { role: actor.role, name: actor.name } : null, projects } });
+  return c.json({ data: { client_name: registered.name, redirect_uri: request.redirect_uri, resource: request.resource, scope: actor ? consentScope(request.scope, actor.role) : request.scope, available_scopes: actor ? selectableScopes(c, request.resource, actor.role) : [], actor: actor ? { role: actor.role, name: actor.name } : null, projects } });
 });
 
 oauthApi.post('/consent', async (c) => {
   if (c.req.header('Origin') !== new URL(c.req.url).origin) throw new OAuthError('invalid_request', 'Same-origin request required', 403);
-  const input = await body(c, z.object({ request_id: z.string().regex(/^[a-f0-9]{64}$/), decision: z.enum(['approve', 'deny']), project_id: z.uuid().nullable().optional() }).strict());
+  const input = await body(c, z.object({ request_id: z.string().regex(/^[a-f0-9]{64}$/), decision: z.enum(['approve', 'deny']), project_id: z.uuid().nullable().optional(), scope: z.string().max(100).optional() }).strict());
   const request = await authorization(c, input.request_id), actor = await browserActor(c);
   if (!actor || request.session_hash !== await digest(getCookie(c, '__Host-coai_session') ?? '')) throw new OAuthError('access_denied', 'Sign in and review the authorization request first', 403);
   const issuer = new URL(c.req.url).origin, claim = oauthSecret('');
@@ -200,7 +204,10 @@ oauthApi.post('/consent', async (c) => {
     if (!result.meta.changes) throw new OAuthError('invalid_request', 'Authorization request already used');
     return c.json({ data: { redirect: callback(request, { error: 'access_denied' }, issuer) } });
   }
-  const scope = consentScope(request.scope, actor.role);
+  const scope = input.scope === undefined ? consentScope(request.scope, actor.role) : scopes(input.scope);
+  if (scope.split(' ').some((value) => !selectableScopes(c, request.resource, actor.role).includes(value))) {
+    throw new OAuthError('invalid_scope', 'Scope is not available for this account and resource');
+  }
   if (!scope) throw new OAuthError('access_denied', 'This account cannot authorize the requested scopes', 403);
   const admin = scope === 'admin';
   if (admin !== (actor.role === 'admin')) throw new OAuthError('access_denied', admin ? 'Administrator sign-in required' : 'User sign-in required', 403);

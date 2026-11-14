@@ -1673,6 +1673,39 @@ describe('OAuth authorization server and protected resources', () => {
     }
   });
 
+  it('allows explicit extra consent scopes while enforcing identity, resource and project boundaries', async () => {
+    const owner = await provision('oauth-extra@test.com'), projectId = await createProject(owner);
+    const cookie = await login('user', owner), clientId = await registerOAuth('Extra consent');
+    const resource = 'https://co-ai.test/mcp';
+    const id = await startOAuth(clientId, cookie, resource);
+    const details = (await (await web('/oauth/requests/' + id, cookie)).json() as any).data;
+    expect(details.scope).toBe('read');
+    expect(details.available_scopes).toEqual(['read', 'write', 'manage']);
+    for (const scope of ['', 'admin', 'read admin', 'unknown']) {
+      expect((await web('/oauth/consent', cookie, 'POST', { request_id: id, decision: 'approve', project_id: projectId, scope })).status).toBe(400);
+    }
+    const consent = await web('/oauth/consent', cookie, 'POST', { request_id: id, decision: 'approve', project_id: projectId, scope: 'read write' });
+    expect(consent.status).toBe(200);
+    const code = new URL((await consent.json() as any).data.redirect).searchParams.get('code')!;
+    const tokens = await oauthTokens(clientId, code, resource);
+    expect(tokens.scope).toBe('read write');
+    const headers = mcpBearer(tokens.access_token);
+    expect((await mcpTool('post_api_v1_projects_projectId_items', { projectId, body: { title: 'Extra write', kind: 'task' } }, headers)).status).toBe(201);
+    const other = await createProject(owner);
+    expect((await mcpTool('get_api_v1_projects_projectId', { projectId: other }, headers)).status).toBe(404);
+    expect((await oauthForm('/oauth/token', { grant_type: 'refresh_token', client_id: clientId, refresh_token: tokens.refresh_token, resource, scope: 'manage' })).status).toBe(400);
+    const refreshed = await oauthForm('/oauth/token', { grant_type: 'refresh_token', client_id: clientId, refresh_token: tokens.refresh_token, resource });
+    expect(refreshed.status).toBe(200);
+    expect((await refreshed.json() as any).scope).toBe('read write');
+    const manageId = await startOAuth(clientId, cookie, resource);
+    expect((await web('/oauth/consent', cookie, 'POST', { request_id: manageId, decision: 'approve', scope: 'manage' })).status).toBe(200);
+    const adminCookie = await login('admin', admin);
+    const adminId = await startOAuth(clientId, adminCookie, 'https://co-ai.test/api/admin', 'admin');
+    const adminDetails = (await (await web('/oauth/requests/' + adminId, adminCookie)).json() as any).data;
+    expect(adminDetails.available_scopes).toEqual(['admin']);
+    expect((await web('/oauth/consent', adminCookie, 'POST', { request_id: adminId, decision: 'approve', scope: 'write' })).status).toBe(400);
+  });
+
   it('rotates refresh tokens atomically, detects replay and revokes the whole grant', async () => {
     const owner = await provision('oauth-refresh@test.com'), projectId = await createProject(owner), cookie = await login('user', owner);
     const clientId = await registerOAuth('Refresh'), resource = 'https://co-ai.test/api/v1';
